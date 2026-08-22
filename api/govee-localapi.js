@@ -16,6 +16,11 @@ const NETWORK_WAIT_INTERVAL_MS = 5000;
 const NETWORK_WAIT_MAX_ATTEMPTS = 24;
 // Govee device UDP port for incoming commands
 const DEVICE_CONTROL_PORT = 4003;
+// A local UDP socket can occasionally fail to bind while Homey is starting or
+// while another process is releasing port 4002. Retry a few times, but keep
+// the recovery bounded so a persistent configuration problem is visible.
+const RECOVERY_MAX_ATTEMPTS = 3;
+const RECOVERY_INITIAL_DELAY_MS = 15000;
 
 class GoveeLocalClient {
   constructor() {
@@ -30,6 +35,8 @@ class GoveeLocalClient {
     // still be sent directly.
     this._fallbackIPs = new Map();
     this._fallbackSocket = null;
+    this._recoveryAttempts = 0;
+    this._recoveryTimer = null;
 
     this._initializeClient();
   }
@@ -74,6 +81,7 @@ class GoveeLocalClient {
         const waitedSec = NETWORK_WAIT_MAX_ATTEMPTS * (NETWORK_WAIT_INTERVAL_MS / 1000);
         this.initError = new Error(`No network interfaces available after ${waitedSec}s — local device discovery unavailable`);
         console.error('[GoveeLocalClient] ' + this.initError.message);
+        this._scheduleRecovery();
       }
     }, NETWORK_WAIT_INTERVAL_MS);
   }
@@ -97,15 +105,25 @@ class GoveeLocalClient {
           console.error('[GoveeLocalClient] ' + this.initError.message);
           console.error('[GoveeLocalClient] Local device discovery will be unavailable. Check if another instance is running.');
           console.error('[GoveeLocalClient] Network interfaces were:', JSON.stringify(interfaces));
+          this._scheduleRecovery();
         }
       }, INIT_TIMEOUT_MS);
 
       this.GoveeClient.on("ready", () => {
         if (this._destroyed) return;
+        if (this.initError) {
+          console.log('[GoveeLocalClient] Local API recovered after initialization error.');
+        }
         this.isReady = true;
+        this.initError = null;
+        this._recoveryAttempts = 0;
         if (this._initTimeout) {
           clearTimeout(this._initTimeout);
           this._initTimeout = null;
+        }
+        if (this._recoveryTimer) {
+          clearTimeout(this._recoveryTimer);
+          this._recoveryTimer = null;
         }
         console.log("[GoveeLocalClient] Local Govee Server/client is ready!");
         console.log("[GoveeLocalClient] Listening on UDP port 4002, multicast group 239.255.255.250");
@@ -163,6 +181,34 @@ class GoveeLocalClient {
     } else {
       console.error('[GoveeLocalClient] Failed to initialize local API client:', err.message);
     }
+
+    this._scheduleRecovery();
+  }
+
+  /**
+   * Retry local API initialization after transient UDP/network failures.
+   * Keeping the number of attempts finite avoids hiding a persistent port or
+   * network configuration problem, while covering normal Homey start-up races.
+   */
+  _scheduleRecovery() {
+    if (this._destroyed || this._recoveryTimer || this._recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
+      return;
+    }
+
+    const delay = RECOVERY_INITIAL_DELAY_MS * (2 ** this._recoveryAttempts);
+    this._recoveryAttempts += 1;
+    console.log(`[GoveeLocalClient] Retrying local API initialization in ${delay / 1000}s (attempt ${this._recoveryAttempts}/${RECOVERY_MAX_ATTEMPTS}).`);
+
+    this._recoveryTimer = setTimeout(async () => {
+      this._recoveryTimer = null;
+      if (this._destroyed || this.isReady) return;
+
+      const recovered = await this.reinitialize();
+      if (!recovered && !this.initError) {
+        this.initError = new Error('Local API reinitialization timed out');
+        this._scheduleRecovery();
+      }
+    }, delay);
   }
 
   /**
@@ -370,7 +416,10 @@ class GoveeLocalClient {
     console.log('[GoveeLocalClient] Reinitializing client...');
 
     // Destroy existing client
-    this.destroy();
+    // Keep direct-control registrations. Local devices are not reloaded when
+    // only this shared UDP client recovers, and losing these registrations
+    // would break cross-VLAN/fallback control until the next app restart.
+    this.destroy({ preserveFallbackIPs: true });
 
     // Wait a moment for the socket to fully release
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -511,7 +560,7 @@ class GoveeLocalClient {
   /**
    * Destroy the client and clean up resources
    */
-  destroy() {
+  destroy({ preserveFallbackIPs = false } = {}) {
     this._destroyed = true;
 
     if (this._initTimeout) {
@@ -521,6 +570,10 @@ class GoveeLocalClient {
     if (this._netWaitTimer) {
       clearInterval(this._netWaitTimer);
       this._netWaitTimer = null;
+    }
+    if (this._recoveryTimer) {
+      clearTimeout(this._recoveryTimer);
+      this._recoveryTimer = null;
     }
     if (this.GoveeClient) {
       try {
@@ -540,7 +593,9 @@ class GoveeLocalClient {
       }
       this._fallbackSocket = null;
     }
-    this._fallbackIPs.clear();
+    if (!preserveFallbackIPs) {
+      this._fallbackIPs.clear();
+    }
     this.localDevices = [];
     this.isReady = false;
     console.log('[GoveeLocalClient] Client destroyed');

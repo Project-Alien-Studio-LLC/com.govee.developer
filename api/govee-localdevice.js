@@ -73,6 +73,19 @@ class GoveeLocalDevice extends Device {
         // alarm_connectivity = true means disconnected, false means connected
         this.setCapabilityValue('alarm_connectivity', !isOnline).catch(this.error);
       }
+
+      // The shared local API client can be rebuilt after a transient UDP
+      // failure. Rebind state updates to the newly discovered device object,
+      // otherwise commands recover but Homey stops receiving feedback.
+      if (isOnline && this.homey.app.localApiClient) {
+        const apiDevice = this.homey.app.localApiClient.getDeviceById(this.data.id);
+        if (apiDevice) {
+          this.registerUpdateEvent(apiDevice);
+          if (apiDevice.state) {
+            this.refreshState(apiDevice.state, ['onOff', 'brightness', 'color']);
+          }
+        }
+      }
     };
 
     this.homey.app.eventBus.on(`local_device_online_${this.data.id}`, this._connectivityHandler);
@@ -100,17 +113,27 @@ class GoveeLocalDevice extends Device {
   }
 
   registerUpdateEvent(apidevice) {
+    if (this._apiDevice === apidevice) return;
+    if (this._apiDevice) {
+      this.unregisterUpdateEvent(this._apiDevice);
+    }
     // Bind this to the updateHandler to ensure it has the correct context 
     const boundUpdateHandler = this.updateHandler.bind(this); 
     apidevice.on('updatedStatus', boundUpdateHandler); 
     // Store the bound handler to remove it later 
     this.boundUpdateHandler = boundUpdateHandler;
+    this._apiDevice = apidevice;
   }
 
   unregisterUpdateEvent(apidevice) {
     if (this.boundUpdateHandler) { 
       apidevice.removeListener('updatedStatus', this.boundUpdateHandler);
-  }}
+    }
+    if (this._apiDevice === apidevice) {
+      this._apiDevice = null;
+      this.boundUpdateHandler = null;
+    }
+  }
 
   async onUninit() {
     this.log('Device uninit, clean up references');
@@ -125,9 +148,8 @@ class GoveeLocalDevice extends Device {
       this.unregisterConnectivityListener();
       // Check if localApiClient exists before trying to use it
       if (this.homey.app.localApiClient && this.data) {
-        var discoveredDevice = this.homey.app.localApiClient.getDeviceById(this.data.id);
-        if (discoveredDevice != null) {
-          this.unregisterUpdateEvent(discoveredDevice);
+        if (this._apiDevice != null) {
+          this.unregisterUpdateEvent(this._apiDevice);
         }
       }
     } catch (err) {
@@ -511,6 +533,9 @@ class GoveeLocalDevice extends Device {
     }
     if (this.homey.app.localApiClient && this.data) {
       this.homey.app.localApiClient.unregisterDeviceIP(this.data.id);
+    }
+    if (this._apiDevice != null) {
+      this.unregisterUpdateEvent(this._apiDevice);
     }
   }
 
