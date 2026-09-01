@@ -9,6 +9,16 @@ class GoveeSharedDeviceClient {
       device._dynamicCapabilityListeners.add(capability);
     }
 
+    claimFlowRegistration(device, group) {
+      const key = `${group}.${device.goveedevicetype}`;
+      const claimed = device.homey.app.claimFlowRegistration(key);
+      if (claimed) {
+        device._pendingFlowRegistrationClaims = device._pendingFlowRegistrationClaims || new Set();
+        device._pendingFlowRegistrationClaims.add(key);
+      }
+      return claimed;
+    }
+
     async refreshDynamicCapabilities(currentState,device)
     {
       //nightlightToggle
@@ -16,8 +26,9 @@ class GoveeSharedDeviceClient {
         {
           device.log('Processing the nightlight state');
           var nightlight = currentState.capabilitieslist.find(function(e) {return e.instance == "nightlightToggle" })
-          device.log(JSON.stringify(nightlight))
-          device.setCapabilityValue('nightlightToggle.'+device.goveedevicetype, (nightlight.state.value == 1)).catch( reason => device.log('Error while updating capability: '+reason) );
+          if (nightlight?.state && Object.prototype.hasOwnProperty.call(nightlight.state, 'value')) {
+            device.setCapabilityValue('nightlightToggle.'+device.goveedevicetype, (nightlight.state.value == 1)).catch( reason => device.log('Error while updating capability: '+reason) );
+          }
         }
       for (const instance of ['socketToggle1', 'socketToggle2']) {
         const capability = instance+'.'+device.goveedevicetype;
@@ -98,7 +109,7 @@ class GoveeSharedDeviceClient {
               await device.addCapability('dreamViewToggle.'+device.goveedevicetype);
             // Register listener for local devices (cloud devices register in setupCapabilities)
             if(device.goveedevicetype === 'localdevice' && device.hasCapability('dreamViewToggle.'+device.goveedevicetype) && device.onCapabilityDreamview) {
-              device.registerCapabilityListener('dreamViewToggle.'+device.goveedevicetype, device.onCapabilityDreamview.bind(device));
+              this.registerDynamicCapabilityListener(device, 'dreamViewToggle.'+device.goveedevicetype, device.onCapabilityDreamview.bind(device));
             }
             await this.setupFlowDreamView(device);
           } else if(device.hasCapability('dreamViewToggle.'+device.goveedevicetype))
@@ -117,7 +128,7 @@ class GoveeSharedDeviceClient {
           }
           // Always register the capability listener (handles both new and existing capabilities)
           if(device.hasCapability('gradientToggle.'+device.goveedevicetype) && device.onCapabilityGradient) {
-            device.registerCapabilityListener('gradientToggle.'+device.goveedevicetype, device.onCapabilityGradient.bind(device));
+            this.registerDynamicCapabilityListener(device, 'gradientToggle.'+device.goveedevicetype, device.onCapabilityGradient.bind(device));
           }
         } else if(device.hasCapability('gradientToggle.'+device.goveedevicetype))
           await device.removeCapability('gradientToggle.'+device.goveedevicetype);
@@ -362,7 +373,8 @@ class GoveeSharedDeviceClient {
 
     async processReceivedDeviceEvent(device, message)
     {
-      device.log(JSON.stringify(message));
+      device.log('Processing a validated Govee MQTT event');
+      if (!Array.isArray(message.capabilities)) return;
       //Trigger the When flow cards as a result
       if(message.capabilities.find(function(e) {return e.instance == "bodyAppearedEvent" }))
       {
@@ -399,6 +411,7 @@ class GoveeSharedDeviceClient {
     }
 
     async setupFlowSwitchLightScene(device) {
+        if (!this.claimFlowRegistration(device, 'light-scenes')) return;
         device.log('Create the flow for the Light scene capability');
         //Now setup the flow cards
         device._switchLightScene = await device.homey.flow.getActionCard('switch-to-light-scene.'+device.goveedevicetype); 
@@ -407,13 +420,13 @@ class GoveeSharedDeviceClient {
             device.log('attempt to switch to a Light Scene: '+args.lightScene);
             return new Promise((resolve, reject) => {
                 device.log('now send the light scene capability command');
-                device.driver.setLightScene(args.lightScene.value, "lightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
+	                args.device.executeSerializedCommand('Flow light scene command', () => args.device.driver.setLightScene(args.lightScene.value, "lightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
                   const sceneIndex = args.device.lightScenes.options.findIndex((obj) => obj.value.id === args.lightScene.value.id);
                   //console.log('Scene selected index: '+sceneIndex);
                   args.device.setIfHasCapability('onoff', true);
-                  args.device.setCapabilityValue('lightScenes.'+device.goveedevicetype, sceneIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
-                  args.device.setIfHasCapability('nightlightScenes.'+device.goveedevicetype, null);
-                  args.device.setIfHasCapability('lightDiyScenes.'+device.goveedevicetype, null);
+	                  args.device.setCapabilityValue('lightScenes.'+args.device.goveedevicetype, sceneIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
+	                  args.device.setIfHasCapability('nightlightScenes.'+args.device.goveedevicetype, null);
+	                  args.device.setIfHasCapability('lightDiyScenes.'+args.device.goveedevicetype, null);
                   resolve(true);
                 }, (_error) => {
                   reject(_error);
@@ -441,8 +454,8 @@ class GoveeSharedDeviceClient {
               device.log('attempt to switch to a random Light Scene on index ('+randomIndex+'): '+randomScene);
               return new Promise((resolve, reject) => {
                   device.log('now send the light scene capability command');
-                  device.driver.setLightScene(randomScene.value, "lightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
-                    args.device.setCapabilityValue('lightScenes.'+device.goveedevicetype, randomIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
+	                  args.device.executeSerializedCommand('Flow random light scene command', () => args.device.driver.setLightScene(randomScene.value, "lightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
+	                    args.device.setCapabilityValue('lightScenes.'+args.device.goveedevicetype, randomIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
                     resolve(true);
                   }, (_error) => {
                     reject(_error);
@@ -454,7 +467,7 @@ class GoveeSharedDeviceClient {
             .registerRunListener(async (args, state) => {
               device.log('attempt to check if Light Scene is active: '+args.lightScene);
                 return new Promise((resolve, reject) => {
-                  const activeScene=args.device.getCapabilityValue('lightScenes.'+device.goveedevicetype);
+	                  const activeScene=args.device.getCapabilityValue('lightScenes.'+args.device.goveedevicetype);
                   const sceneIndex= args.device.lightScenes.options.findIndex((obj) => obj.value.id === args.lightScene.value.id);
                   device.log('Compare active index '+activeScene+' with picked index '+sceneIndex);
                   resolve(activeScene==sceneIndex);
@@ -475,6 +488,7 @@ class GoveeSharedDeviceClient {
     }
 
     async setupFlowSwitchNightlightScene(device) {
+      if (!this.claimFlowRegistration(device, 'nightlight-scenes')) return;
       device.log('Create the flow for the Nightlight scene capability');
       //Now setup the flow cards
       device._switchNightlightScene = await device.homey.flow.getActionCard('switch-to-nightlight-scene.'+device.goveedevicetype); 
@@ -483,11 +497,11 @@ class GoveeSharedDeviceClient {
           device.log('attempt to switch to a Nightlight Scene: '+args.nightlightScene);
           return new Promise((resolve, reject) => {
               device.log('now send the nightlight scene capability command');
-              device.driver.setMode(args.nightlightScene.value, "nightlightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
+	              args.device.executeSerializedCommand('Flow nightlight scene command', () => args.device.driver.setMode(args.nightlightScene.value, "nightlightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
                 const sceneIndex = args.device.nightlightScenes.options.findIndex((obj) => obj.value.id === args.nightlightScene.value.id);
-                args.device.setCapabilityValue('nightlightScenes.'+device.goveedevicetype, sceneIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
-                args.device.setIfHasCapability('lightScenes.'+device.goveedevicetype, null);
-                args.device.setIfHasCapability('lightDiyScenes.'+device.goveedevicetype, null);
+	                args.device.setCapabilityValue('nightlightScenes.'+args.device.goveedevicetype, sceneIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
+	                args.device.setIfHasCapability('lightScenes.'+args.device.goveedevicetype, null);
+	                args.device.setIfHasCapability('lightDiyScenes.'+args.device.goveedevicetype, null);
                 resolve(true);
               }, (_error) => {
                 reject(_error);
@@ -515,8 +529,8 @@ class GoveeSharedDeviceClient {
             device.log('attempt to switch to a random Nightlight Scene on index ('+randomIndex+'): '+randomScene);
             return new Promise((resolve, reject) => {
                 device.log('now send the nightlight scene capability command');
-                device.driver.setMode(randomScene.value, "nightlightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
-                  args.device.setCapabilityValue('nightlightScenes.'+device.goveedevicetype, randomIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
+	                args.device.executeSerializedCommand('Flow random nightlight scene command', () => args.device.driver.setMode(randomScene.value, "nightlightScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
+	                  args.device.setCapabilityValue('nightlightScenes.'+args.device.goveedevicetype, randomIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
                   resolve(true);
                 }, (_error) => {
                   reject(_error);
@@ -528,7 +542,7 @@ class GoveeSharedDeviceClient {
           .registerRunListener(async (args, state) => {
             device.log('attempt to check if Nightlight Scene is active: '+args.nightlightScene);
               return new Promise((resolve, reject) => {
-                let activeScene=args.device.getCapabilityValue('nightlightScenes.'+device.goveedevicetype);
+	                let activeScene=args.device.getCapabilityValue('nightlightScenes.'+args.device.goveedevicetype);
                 const sceneIndex = args.device.nightlightScenes.options.findIndex((obj) => obj.value.id === args.nightlightScene.value.id);
                 resolve(activeScene==sceneIndex);
               });
@@ -590,11 +604,11 @@ createSegmentCollection(segmentField)
       value: null,
       name: `Use segment list`
     });
-    console.log(JSON.stringify(segmentRange));
     return segmentRange;
   }
 
   async setupFlowSegmentControlColor(device) {
+    if (!this.claimFlowRegistration(device, 'segment-color')) return;
     device.log('Create the flow for the Segment Color Control capability');
     //Now setup the flow cards
     device._setSegmentColor = await device.homey.flow.getActionCard('set-segment-color.'+device.goveedevicetype); 
@@ -612,7 +626,7 @@ createSegmentCollection(segmentField)
             else
               segmentArray = args.segmentNr.value.split(',').map(Number);
               device.log('attempt to set a device segment ['+segmentArray+']: color '+args.segmentColor);
-              device.driver.setSegmentColor(segmentArray, args.segmentColor, args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
+              args.device.executeSerializedCommand('Flow segment color command', () => args.device.driver.setSegmentColor(segmentArray, args.segmentColor, args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
               resolve(true);
             }, (_error) => {
               reject(_error);
@@ -636,6 +650,7 @@ createSegmentCollection(segmentField)
   }
 
   async setupFlowSegmentControlBrightness(device) {
+    if (!this.claimFlowRegistration(device, 'segment-brightness')) return;
     device.log('Create the flow for the Segment Brightness Control capability');
     //Now setup the flow cards
     device._setSegmentBrightness = await device.homey.flow.getActionCard('set-segment-brightness.'+device.goveedevicetype); 
@@ -653,7 +668,7 @@ createSegmentCollection(segmentField)
           else
             segmentArray = args.segmentNr.value.split(',').map(Number);
             device.log('attempt to set a device segment ['+segmentArray+']: brightness '+args.segmentBrightness);
-            device.driver.setSegmentBrightness(segmentArray, args.segmentBrightness, args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
+            args.device.executeSerializedCommand('Flow segment brightness command', () => args.device.driver.setSegmentBrightness(segmentArray, args.segmentBrightness, args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
             resolve(true);
           }, (_error) => {
             reject(_error);
@@ -663,7 +678,6 @@ createSegmentCollection(segmentField)
       device._setSegmentBrightness
       .registerArgumentAutocompleteListener('segmentNr', async (query, args) => {
         device.log('attempt to list available segments with ['+query+']');
-        console.log('segmentParameters: '+JSON.stringify(args.device.segmentBrightnessParameters));
         let segmentRange = this.createSegmentCollection(args.device.segmentBrightnessParameters.find(function(e) {return e.fieldName == "segment" }));
         let filteredSegments = segmentRange.filter(function(e) { 
           return e.name.toLowerCase().includes(query.toLowerCase()) 
@@ -677,77 +691,43 @@ createSegmentCollection(segmentField)
   }
 
   async setupFlowDreamView(device) {
+    if (!this.claimFlowRegistration(device, 'dreamview')) return;
     device.log('Create the flow for the dream view capability');
     //Now setup the flow cards
     device._activateDreamview = await device.homey.flow.getActionCard('activate-dreamview.'+device.goveedevicetype); 
     device._activateDreamview
       .registerRunListener(async (args, state) => {
-        device.log('attempt to toggle dreamview: '+args.activate);
-        device.setIfHasCapability('dreamViewToggle', args.activate);
-        if(args.activate){
-          return new Promise((resolve, reject) => {
-            device.driver.toggle(1, 'dreamViewToggle', args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
-              args.device.setCapabilityValue('dreamViewToggle.'+device.goveedevicetype, true).catch( reason => args.device.log('Error while updating capability: '+reason) );
-              resolve(true);
-            }, (_error) => {
-              reject(_error);
-            });
-          });
-        } else {
-          return new Promise((resolve, reject) => {
-            device.driver.toggle(0, 'dreamViewToggle', args.device.data.model,args.device.data.mac, args.device.goveedevicetype).then(() => {
-              args.device.setCapabilityValue('dreamViewToggle.'+device.goveedevicetype, false).catch( reason => args.device.log('Error while updating capability: '+reason) );
-              resolve(true);
-            }, (_error) => {
-              reject(_error);
-            });
-          });
-        }
+        args.device.log('Flow requested a DreamView toggle');
+        await args.device.onCapabilityDreamview(args.activate, {});
+        return true;
       });
   }
 
   async setupFlowNightLight(device) {
+    if (!this.claimFlowRegistration(device, 'nightlight')) return;
     device.log('Create the flow for the nightlight capability');
     //Now setup the flow cards
     device._activateNightlight = await device.homey.flow.getActionCard('activate-nightlight.'+device.goveedevicetype); 
     device._activateNightlight
       .registerRunListener(async (args, state) => {
-        device.log('attempt to toggle nightlight: '+args.activate);
-        const capability = 'nightlightToggle.'+device.goveedevicetype;
-        if(args.activate){
-          return new Promise((resolve, reject) => {
-            device.driver.toggle(1, 'nightlightToggle', args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
-              args.device.setIfHasCapability(capability, true);
-              resolve(true);
-            }, (_error) => {
-              reject(_error);
-            });
-          });
-        } else {
-          return new Promise((resolve, reject) => {
-            device.driver.toggle(0, 'nightlightToggle', args.device.data.model,args.device.data.mac, args.device.goveedevicetype).then(() => {
-              args.device.setIfHasCapability(capability, false);
-              resolve(true);
-            }, (_error) => {
-              reject(_error);
-            });
-          });
-        }
+        args.device.log('Flow requested a nightlight toggle');
+        await args.device.onCapabilityNightlight(args.activate, {});
+        return true;
       });
   }
 
   async setupFlowSocketToggle(device, instance) {
-    const capability = instance+'.'+device.goveedevicetype;
+    if (!this.claimFlowRegistration(device, `socket-toggle.${instance}`)) return;
     const cardId = 'activate-'+instance+'.'+device.goveedevicetype;
     const actionCard = await device.homey.flow.getActionCard(cardId);
     actionCard.registerRunListener(async (args) => {
-      await args.device.driver.toggle(args.activate ? 1 : 0, instance, args.device.data.model, args.device.data.mac, args.device.goveedevicetype);
-      await args.device.setIfHasCapability(capability, args.activate);
+      await args.device.onCapabilitySocketToggle(instance, args.activate, {});
       return true;
     });
   }
 
   async setupFlowSwitchDiyScene(device) {
+    if (!this.claimFlowRegistration(device, 'diy-scenes')) return;
     //console.log('Create the flow for the DIY Light scene capability');
     //Now setup the flow cards
     device._switchDiyLightScene = await device.homey.flow.getActionCard('switch-to-diy-light-scene.'+device.goveedevicetype); 
@@ -756,12 +736,12 @@ createSegmentCollection(segmentField)
         device.log('attempt to switch to a DIY Light Scene: '+args.diyScene);
         return new Promise((resolve, reject) => {
             device.log('now send the DIY light scene capability command');
-            device.driver.setLightScene(args.diyScene.value, "diyScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
+	            args.device.executeSerializedCommand('Flow DIY scene command', () => args.device.driver.setLightScene(args.diyScene.value, "diyScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
             const sceneIndex = args.device.diyScenes.options.findIndex((obj) => obj.value === args.diyScene.value);
             args.device.setIfHasCapability('onoff', true);
-            args.device.setCapabilityValue('lightDiyScenes.'+device.goveedevicetype, sceneIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
-            args.device.setIfHasCapability('lightScenes.'+device.goveedevicetype, null);
-            args.device.setIfHasCapability('nightlightScenes.'+device.goveedevicetype, null);
+	            args.device.setCapabilityValue('lightDiyScenes.'+args.device.goveedevicetype, sceneIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
+	            args.device.setIfHasCapability('lightScenes.'+args.device.goveedevicetype, null);
+	            args.device.setIfHasCapability('nightlightScenes.'+args.device.goveedevicetype, null);
             resolve(true);
           }, (_error) => {
             reject(_error);
@@ -789,8 +769,8 @@ createSegmentCollection(segmentField)
               device.log('attempt to switch to a random Diy Light Scene on index ('+randomIndex+'): '+randomScene);
               return new Promise((resolve, reject) => {
                   device.log('now send the light scene capability command');
-                  device.driver.setLightScene(randomScene.value, "diyScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
-                    args.device.setCapabilityValue('lightDiyScenes.'+device.goveedevicetype, randomIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
+	                  args.device.executeSerializedCommand('Flow random DIY scene command', () => args.device.driver.setLightScene(randomScene.value, "diyScene", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
+	                    args.device.setCapabilityValue('lightDiyScenes.'+args.device.goveedevicetype, randomIndex).catch( reason => args.device.log('Error while updating capability: '+reason) );
                     resolve(true);
                   }, (_error) => {
                     reject(_error);
@@ -802,7 +782,7 @@ createSegmentCollection(segmentField)
         .registerRunListener(async (args, state) => {
           device.log('attempt to switch to a DIY Light Scene: '+args.diyScene);
             return new Promise((resolve, reject) => {
-              let activeScene=args.device.getCapabilityValue('lightDiyScenes.'+device.goveedevicetype);
+	              let activeScene=args.device.getCapabilityValue('lightDiyScenes.'+args.device.goveedevicetype);
               const sceneIndex = args.device.diyScenes.options.findIndex((obj) => obj.value === args.diyScene.value);
               resolve(activeScene==sceneIndex);
             });
@@ -822,6 +802,7 @@ createSegmentCollection(segmentField)
   }
 
   async setupFlowSnapshots(device) {
+    if (!this.claimFlowRegistration(device, 'snapshots')) return;
     //console.log('Create the flow for the Snapshots capability');
     //Now setup the flow cards
     device._activateSnapshot = await device.homey.flow.getActionCard('activate-snapshot.'+device.goveedevicetype); 
@@ -830,7 +811,7 @@ createSegmentCollection(segmentField)
         device.log('attempt to activate snapshot: '+args.snapshot);
         return new Promise((resolve, reject) => {
             device.log('now send the DIY light scene capability command');
-            device.driver.setLightScene(args.snapshot.value, "snapshot", args.device.data.model, args.device.data.mac, device.goveedevicetype).then(() => {
+	            args.device.executeSerializedCommand('Flow snapshot command', () => args.device.driver.setLightScene(args.snapshot.value, "snapshot", args.device.data.model, args.device.data.mac, args.device.goveedevicetype)).then(() => {
             resolve(true);
           }, (_error) => {
             reject(_error);
@@ -842,7 +823,6 @@ createSegmentCollection(segmentField)
         device.log('attempt to list available snapshots matching filter ['+query+']');
         var devicelist = await args.device.driver.coudapi.deviceList();
         var thisdevice = devicelist.data.find(function(e) { return e.device === args.device.data.mac })
-        console.log("device "+args.device.data.mac+"|"+JSON.stringify(thisdevice));
         let snaphotList = thisdevice.capabilities.find(function(e) { return e.instance === "snapshot" })
         let filteredSnapshots = snaphotList.parameters.options.filter(function(e) { 
           return e.name.toLowerCase().includes(query.toLowerCase()) 
@@ -856,6 +836,7 @@ createSegmentCollection(segmentField)
   }
 
   async setupFlowMusicMode(device) {
+    if (!this.claimFlowRegistration(device, 'music-mode')) return;
     //console.log('Create the flow for the MusicMode capability');
     //Now setup the flow cards
     device._activateMusicMode = await device.homey.flow.getActionCard('activate-music-mode.'+device.goveedevicetype); 
@@ -864,7 +845,7 @@ createSegmentCollection(segmentField)
         device.log('attempt to activate music mode: '+args.musicMode);
         return new Promise((resolve, reject) => {
             device.log('now send the music mode capability command');
-            device.driver.setMusicMode(args.musicMode.value, args.sensitivity, args.device.data.model, args.device.data.mac).then(() => {
+	            args.device.executeSerializedCommand('Flow music mode command', () => args.device.driver.setMusicMode(args.musicMode.value, args.sensitivity, args.device.data.model, args.device.data.mac)).then(() => {
             resolve(true);
           }, (_error) => {
             reject(_error);
@@ -888,6 +869,7 @@ createSegmentCollection(segmentField)
   }
 
   async setupFlowWorkMode(device) {
+    if (!this.claimFlowRegistration(device, 'work-mode')) return;
     //console.log('Create the flow for the WorkcMode capability');
     //Now setup the flow cards
     device._setWorkMode = await device.homey.flow.getActionCard('set-work-mode.'+device.goveedevicetype); 
@@ -896,7 +878,7 @@ createSegmentCollection(segmentField)
         device.log('attempt to set work mode: '+JSON.stringify(args.workMode)+' with value '+JSON.stringify(args.modeValue));
         return new Promise((resolve, reject) => {
             device.log('now send the work mode capability command');
-            device.driver.setWorkMode(args.workMode, args.modeValue, args.device.data.model, args.device.data.mac).then(() => {
+	            args.device.executeSerializedCommand('Flow work mode command', () => args.device.driver.setWorkMode(args.workMode, args.modeValue, args.device.data.model, args.device.data.mac)).then(() => {
             resolve(true);
           }, (_error) => {
             reject(_error);

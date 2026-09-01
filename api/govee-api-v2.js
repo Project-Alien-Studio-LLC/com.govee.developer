@@ -8,36 +8,103 @@
 const fetch = require('isomorphic-unfetch');
 const { randomUUID } = require('node:crypto');
 
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+class GoveeApiError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'GoveeApiError';
+    Object.assign(this, details);
+  }
+}
+
 class GoveeClient {
   constructor(config) {
     this.api_key = config.api_key;
     this.basePath = "https://openapi.api.govee.com/router/api/v1";
+    this.fetch = config.fetch || fetch;
+    this.requestTimeoutMs = config.request_timeout_ms || 10000;
+    this.maxRetries = config.max_retries ?? 2;
+    this.wait = config.wait || wait;
+    this.log = config.log || (() => {});
   }
 
-  request(endpoint = "", options = {}) {
-    let url = this.basePath + endpoint;
-    
-    let headers = {
+  async request(endpoint = "", options = {}) {
+    const url = this.basePath + endpoint;
+    const headers = {
       'Govee-API-Key': this.api_key,
-      'Content-type': 'application/json'
+      'Content-type': 'application/json',
+      ...(options.headers || {}),
     };
+    const method = options.method || 'GET';
+    const requestId = this.getRequestId(options.body);
 
-    let config = {
-        ...options,
-        headers
-    };
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      let response;
+      let data;
+      try {
+        this.log(`Govee API ${method} ${endpoint}`);
+        response = await this.fetch(url, { ...options, headers, signal: controller.signal });
+        data = await this.parseResponse(response);
+      } catch (error) {
+        const timedOut = error && error.name === 'AbortError';
+        const wrapped = new GoveeApiError(
+          timedOut ? `Govee API request timed out after ${this.requestTimeoutMs}ms` : `Govee API request failed: ${error.message}`,
+          { code: timedOut ? 'GOVEE_TIMEOUT' : 'GOVEE_NETWORK_ERROR', requestId, cause: error },
+        );
+        if (attempt < this.maxRetries) {
+          await this.wait(this.retryDelayMs(attempt));
+          continue;
+        }
+        throw wrapped;
+      } finally {
+        clearTimeout(timeout);
+      }
 
-    console.log('Call to '+url+' with config '+JSON.stringify(options));
+      const status = Number(response.status || 200);
+      const apiCode = Number(data?.code);
+      if (status >= 200 && status < 300 && apiCode === 200) return data;
 
-    return fetch(url, config).then((r) => r.json())
-    .then((data) => {
-      //console.log(data);
-      if(data.code==200)
-      {
-        return data;
-      } 
-      throw new Error(data.msg);      
-    });      
+      const retryable = RETRYABLE_STATUS_CODES.has(status) || apiCode === 429;
+      if (retryable && attempt < this.maxRetries) {
+        await this.wait(this.retryAfterMs(response, attempt));
+        continue;
+      }
+
+      throw new GoveeApiError(data?.msg || `Govee API returned HTTP ${status}`, {
+        status,
+        code: Number.isFinite(apiCode) ? apiCode : undefined,
+        requestId,
+        retryable,
+      });
+    }
+    throw new GoveeApiError('Govee API request exhausted retry attempts', { requestId });
+  }
+
+  getRequestId(body) {
+    if (typeof body !== 'string') return undefined;
+    try { return JSON.parse(body).requestId; } catch (_error) { return undefined; }
+  }
+
+  async parseResponse(response) {
+    const text = await response.text();
+    if (!text) return {};
+    try { return JSON.parse(text); } catch (_error) {
+      throw new GoveeApiError('Govee API returned a non-JSON response', { status: response.status });
+    }
+  }
+
+  retryDelayMs(attempt) {
+    return Math.min(8000, 500 * (2 ** attempt)) + Math.floor(Math.random() * 250);
+  }
+
+  retryAfterMs(response, attempt) {
+    const retryAfter = response.headers?.get?.('retry-after');
+    const seconds = Number(retryAfter);
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : this.retryDelayMs(attempt);
   }
 
   ping() {
@@ -75,7 +142,6 @@ class GoveeClient {
       method: 'POST',
       body: JSON.stringify(body)
     };
-    console.log('request created with config '+config)
     return this.request('/device/scenes', config);
   }
 
@@ -104,7 +170,6 @@ class GoveeClient {
   }
 
   lightModes(model, device) {
-    console.log('will retrieve light modes')
     return new Promise((resolve, reject) => {
         //console.log('attempt to retrieve light modes for device ['+device+':'+model+']');
         let params = {
@@ -114,7 +179,6 @@ class GoveeClient {
               "device": device
           }
         };
-        console.log('request created with '+params)
         this.postDynamicScenesRequest(params).then(res => {
             resolve(res.payload);
         }).catch(e => {reject(e)});
@@ -341,10 +405,7 @@ class GoveeClient {
         }
         this.deviceControl(params).then(res => {
           resolve(res);
-        }).catch(res => {
-          console.log(JSON.stringify(res));
-          reject(res)
-        });
+        }).catch(res => reject(res));
       }
     });
   }
@@ -458,3 +519,4 @@ class GoveeClient {
 }
 
 exports.GoveeClient = GoveeClient;
+exports.GoveeApiError = GoveeApiError;

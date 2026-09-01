@@ -10,14 +10,16 @@ class GoveeDriver extends Driver {
    */
   async onInit() {
     this.api = new gv.GoveeClient({
-      api_key: this.homey.settings.get('api_key')
+      api_key: this.homey.settings.get('api_key'),
+      log: (message) => this.log(message),
     });
     this.coudapi = this.api;
   }
 
   async reInit() {
     this.api = new gv.GoveeClient({
-      api_key: this.homey.settings.get('api_key')
+      api_key: this.homey.settings.get('api_key'),
+      log: (message) => this.log(message),
     });
     this.coudapi = this.api;
     this.log('govee.driver has been re-initialized');

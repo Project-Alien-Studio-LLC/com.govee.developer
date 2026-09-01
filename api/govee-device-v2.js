@@ -2,6 +2,8 @@
 
 const { Device } = require('homey');
 const { parseGoveeRgbState, resolveHomeyColor } = require('../lib/govee-color');
+const { GoveeCommandCoordinator } = require('../lib/govee-command-coordinator');
+const { findCapabilityValue, nearlyEqual } = require('../lib/govee-state');
 const GoveeSharedDevice = require('./govee-shared-device');
 
 class GoveeDevice extends Device {
@@ -9,31 +11,55 @@ class GoveeDevice extends Device {
    * onInit is called when the device is initialized.
    */
   async setupDevice() {
+    this._commandCoordinator = this._commandCoordinator || new GoveeCommandCoordinator();
     try {
+      this._setupStage = 'device data';
       this.sharedDevice = new GoveeSharedDevice.SharedDevice();
       this.data = await this.getDeviceData();
-      //Check if the device is fully setup
+      if (!Array.isArray(this.data.capabilitieslist)) this.data.capabilitieslist = [];
+      this._setupStage = 'standard capabilities';
       await this.addRemoveStandardCapabilities();
-      //Lets create any missing capability based on the capabilitiesList
+      this._setupStage = 'dynamic capabilities and Flow cards';
       await this.sharedDevice.createDynamicCapabilities(this.data.model,this.data.mac,this.data.capabilitieslist,this);
+      this._setupStage = 'capability cleanup';
       await this.cleanOldCapabilities();
-      //Now lets hook those capabilities to events
+      this._setupStage = 'capability listeners';
       await this.setupCapabilities();
+      this._pendingFlowRegistrationClaims?.clear();
       this.log('govee.device.'+this.data.model+': '+this.data.name+' of type '+this.goveedevicetype+' has been setup');
-      //Give the device its correct state
-      this.refreshState();
-      //Lets connect the update sequence to keep track of the state
+      this._setupRetryCount = 0;
+      await this.unsetWarning().catch(() => {});
+      await this.setAvailable().catch(() => {});
       this.start_update_loop();
+      try {
+        await this.refreshState();
+      } catch (error) {
+        this.log(`Initial state refresh will retry through the scheduler: ${error.message}`);
+      }
     } catch (err) {
-      this.error('Failed to setup device:', err.message);
-      // Still try to start the update loop so the device can recover
-      this.start_update_loop();
+      const message = `Setup failed during ${this._setupStage || 'initialization'}: ${err.message}`;
+      this.error(message);
+      for (const key of this._pendingFlowRegistrationClaims || []) this.homey.app.releaseFlowRegistration(key);
+      this._pendingFlowRegistrationClaims?.clear();
+      await this.setUnavailable(message).catch(() => {});
+      this.scheduleSetupRetry();
     }
   }
 
+  scheduleSetupRetry() {
+    if (this._setupRetryTimer) return;
+    this._setupRetryCount = (this._setupRetryCount || 0) + 1;
+    const delay = Math.min(300000, 5000 * (2 ** Math.min(this._setupRetryCount - 1, 6)));
+    this._setupRetryTimer = this.homey.setTimeout(() => {
+      this._setupRetryTimer = null;
+      void this.setupDevice();
+    }, delay);
+    this.log(`Device setup will retry in ${Math.round(delay / 1000)} seconds`);
+  }
+
   async onUninit() {
-    //Clear any listeners
-    this.homey.clearInterval(this._timer);
+    if (this._setupRetryTimer) this.homey.clearTimeout(this._setupRetryTimer);
+    this.homey.app.unregisterPollDevice(this);
     // Unregister MQTT event listener
     if (this.sharedDevice) {
       this.sharedDevice.unregisterMqttEventListener(this);
@@ -63,7 +89,7 @@ class GoveeDevice extends Device {
     var thisdevice = devicelist.data.find(function(e) { return e.device === deviceData.mac })
     if(thisdevice!=null){
       this.log('Device '+deviceData.mac+' needs to be upgraded, retrieved its capabilities');
-      console.log(JSON.stringify(thisdevice.capabilities));
+      this.log('Retrieved updated capability metadata for a legacy device');
       //Now make sure we store these, so we can consider the device upgraded
       this.setStoreValue('capabilityList',thisdevice.capabilities).catch(err => this.error('Failed to store capabilityList:', err.message));
       this.setStoreValue('deviceVersion','v2').catch(err => this.error('Failed to store deviceVersion:', err.message));
@@ -90,169 +116,103 @@ class GoveeDevice extends Device {
       this.log('Interval is not set or set to low, force 1 min');
       interval = 60000;
     }
-    this._timer = this.homey.setInterval(() => {
-        this.refreshState();
-    }, interval); //Do not set this to low, 4 devices per halve minute already surpases the 10K global call count per day
+    this.homey.app.registerPollDevice(this, interval);
   }
 
   async refreshState()
   {
+    if (this._refreshPromise) return this._refreshPromise;
     if (!this.data) {
-      this.error('Cannot refresh state: device data not initialized');
-      return;
+      throw new Error('Cannot refresh state: device data not initialized');
     }
-    this.log('govee.'+this.goveedevicetype+'.'+this.data.model+': '+this.data.name+' device state to be retrieved');
-    this.driver.deviceState(this.data.model, this.data.mac, this.data.type).then(currentState => {
-      console.log(JSON.stringify(currentState.capabilitieslist));
+    this._refreshPromise = this.performRefresh();
+    try {
+      return await this._refreshPromise;
+    } finally {
+      this._refreshPromise = null;
+    }
+  }
 
-      //Lets refresh our dynamic capabilities
-      this.sharedDevice.refreshDynamicCapabilities(currentState, this);
+  async performRefresh() {
+    try {
+      const currentState = await this.driver.deviceState(this.data.model, this.data.mac, this.data.type);
+      const capabilities = currentState?.capabilitieslist;
+      if (!Array.isArray(capabilities)) throw new Error('Govee returned an invalid capability state list');
 
-      //Now update the capabilities with the actual state
-      if(this.hasCapability('alarm_online.'+this.goveedevicetype))
-        {
-          this.log('Processing the online state');
-          var online = currentState.capabilitieslist.find(function(e) {return e.instance == "online" })
-          this.setCapabilityValue('alarm_online.'+this.goveedevicetype,!online.state.value).catch( reason => this.log('Error while updating capability: '+reason) );
-        }
-        if(this.hasCapability('alarm_connectivity'))
-          {
-            this.log('Processing the online state');
-            var online = currentState.capabilitieslist.find(function(e) {return e.instance == "online" })
-            this.setCapabilityValue('alarm_connectivity',!online.state.value).catch( reason => this.log('Error while updating capability: '+reason) );
-          }
-      if (this.hasCapability('onoff'))
-      {
-        this.log('Processing the on off toggle state');
-        var powerstate = currentState.capabilitieslist.find(function(e) { return e.instance == "powerSwitch" })
-        if(powerstate.state.value) //should be a boolean value
-          this.setCapabilityValue('onoff', true).catch( reason => this.log('Error while updating capability: '+reason) );
-        else
-          this.setCapabilityValue('onoff', false).catch( reason => this.log('Error while updating capability: '+reason) );
-      }
-      if (this.hasCapability('oscillating'))
-      {
-        this.log('Processing the Oscillating state');
-        var options = currentState.capabilitieslist.find(function(e) { return e.instance == "oscillationToggle" })
-        this.setCapabilityValue('oscillating', (options.state.value==1)).catch( reason => this.log('Error while updating capability: '+reason) );
-      }
-      if (this.hasCapability('dim'))
-      {
-        this.log('Processing the dim level state');
-        var brightness = currentState.capabilitieslist.find(function(e) { return e.instance == "brightness" })
-        if (brightness.state.value > 100)
-          this.setCapabilityValue('dim', (brightness.state.value/255)).catch( reason => this.log('Error while updating capability: '+reason) );
-        //Seems to be a mismatch in documentation. It should be a range between 0 and 100
-        else
-          this.setCapabilityValue('dim', (brightness.state.value/100)).catch( reason => this.log('Error while updating capability: '+reason) );
-      }
-      if (this.hasCapability('light_temperature'))
-      {
-        this.log('Processing the colorTemp state');
-        var colorTempState = currentState.capabilitieslist.find(function(e) {return e.instance == "colorTemperatureK" })
+      await this.sharedDevice.refreshDynamicCapabilities(currentState, this);
+      const update = async (capability, value) => {
+        if (value !== undefined && this.hasCapability(capability)) await this.setCapabilityValue(capability, value);
+      };
 
-        if(colorTempState.state.value!=0)
-        {
-          var colorTempOptions = this.data.capabilitieslist.find(function(e) {return e.instance == "colorTemperatureK" });
-          let rangeMin = colorTempOptions.parameters.range.min;
-          let rangeMax = colorTempOptions.parameters.range.max;
-          let rangeTotal = rangeMax-rangeMin;
-          this.log('colorTem: '+colorTempState.state.value+' - range[max:'+rangeMax+', min: '+rangeMin+', range: '+rangeTotal+']');
-          var rangePerc = 1 - ((colorTempState.state.value-rangeMin)/rangeTotal);
-          this.log('colorTem: '+colorTempState.state.value+' - range[max:'+rangeMax+', min: '+rangeMin+', range: '+rangeTotal+'] so perc is: '+rangePerc);
-          if (rangePerc>1) rangePerc = 1; //Seems that sometimes this math ends up in a higher than 1 result, strange but without more data hard to locate.
-          if(this.hasCapability('light_mode'))
-            this.setCapabilityValue('light_mode', 'temperature').catch( reason => this.log('Error while updating capability: '+reason) ); 
-            //Tell homey we are in colorTemp mode
-          this.setCapabilityValue('light_temperature', rangePerc).catch( reason => this.log('Error while updating capability: '+reason) );
+      const online = findCapabilityValue(capabilities, 'online');
+      if (online !== undefined) {
+        await update('alarm_online.'+this.goveedevicetype, !Boolean(online));
+        await update('alarm_connectivity', !Boolean(online));
+      }
+      const power = findCapabilityValue(capabilities, 'powerSwitch');
+      await update('onoff', power === undefined ? undefined : Boolean(power));
+      const oscillating = findCapabilityValue(capabilities, 'oscillationToggle');
+      await update('oscillating', oscillating === undefined ? undefined : oscillating == 1);
+      const brightness = findCapabilityValue(capabilities, 'brightness');
+      if (Number.isFinite(brightness)) await update('dim', brightness / (brightness > 100 ? 255 : 100));
+
+      const colorTemperature = findCapabilityValue(capabilities, 'colorTemperatureK');
+      const colorTemperatureOptions = this.data.capabilitieslist.find((entry) => entry.instance === 'colorTemperatureK');
+      if (this.hasCapability('light_temperature') && colorTemperature !== undefined && colorTemperatureOptions?.parameters?.range) {
+        if (colorTemperature !== 0) {
+          const { min, max } = colorTemperatureOptions.parameters.range;
+          const percentage = Math.max(0, Math.min(1, 1 - ((colorTemperature - min) / (max - min))));
+          await update('light_mode', 'temperature');
+          await update('light_temperature', percentage);
         } else {
-          this.log('no color temp known');
-          if(this.hasCapability('light_mode'))
-            this.setCapabilityValue('light_mode', 'color').catch( reason => this.log('Error while updating capability: '+reason) ); 
-            //Tell homey we are not in colorTemp mode
-          this.setCapabilityValue('light_temperature', null).catch( reason => this.log('Error while updating capability: '+reason) );
-        }
-      }
-      if(this.hasCapability('light_hue'))
-      {
-        this.log('Processing the colorRGB state');
-        const colorState = parseGoveeRgbState(
-          currentState.capabilitieslist,
-          this.driver.colorCommandGetParser.bind(this.driver),
-        );
-        if(colorState?.mode === 'color')
-        {
-          this.log(JSON.stringify(colorState))
-          if(this.hasCapability('light_mode'))
-            this.setCapabilityValue('light_mode', 'color').catch( reason => this.log('Error while updating capability: '+reason) );
-            //Tell homey we are in color mode
-          this.setCapabilityValue('light_saturation', colorState.saturation).catch( reason => this.log('Error while updating capability: '+reason) );
-          this.setCapabilityValue('light_hue', colorState.hue).catch( reason => this.log('Error while updating capability: '+reason) );
-        }
-        else if(colorState?.mode === 'temperature') {
-          this.log('no color rgb known');
-          if(this.hasCapability('light_mode'))
-            this.setCapabilityValue('light_mode', 'temperature').catch( reason => this.log('Error while updating capability: '+reason) );
-            //Tell homey we are not in color mode
-          this.setCapabilityValue('light_hue', null).catch( reason => this.log('Error while updating capability: '+reason) );
-          this.setCapabilityValue('light_saturation', null).catch( reason => this.log('Error while updating capability: '+reason) );
-        } else {
-          this.log('No valid color RGB state was returned');
+          await update('light_mode', 'color');
+          await update('light_temperature', null);
         }
       }
 
-      //The following are more appliance like capabilities
-      if(this.hasCapability('mode'))
-      {
-        this.log('Processing the light mode state');
-        var mode = currentState.capabilitieslist.find(function(e) {return e.instance == "lightScene" })
-        if(mode!=null && mode!=undefined)
-        {
-          //How to read modes?
-          //this.setCapabilityValue('mode', this.data.properties.mode);
-        }
-        else {
-          //How to read modes?
-          this.setCapabilityValue('mode', null).catch( reason => this.log('Error while updating capability: '+reason) );
+      if (this.hasCapability('light_hue')) {
+        const colorState = parseGoveeRgbState(capabilities, this.driver.colorCommandGetParser.bind(this.driver));
+        if (colorState?.mode === 'color') {
+          await update('light_mode', 'color');
+          await update('light_saturation', colorState.saturation);
+          await update('light_hue', colorState.hue);
+        } else if (colorState?.mode === 'temperature') {
+          await update('light_mode', 'temperature');
+          await update('light_hue', null);
+          await update('light_saturation', null);
         }
       }
-      if(this.hasCapability('target_temperature'))
-      {
-        this.log('Processing the target temperature state');
-        var temp = currentState.capabilitieslist.find(function(e) {return e.instance == "targetTemperature" })
-          || currentState.capabilitieslist.find(function(e) {return e.instance == "sliderTemperature" });
-        if(temp && temp.state && temp.state.value) {
-          var celc;
-          if(temp.state.value.unit=='Fahrenheit')
-            celc = (temp.state.value.temperature - 32) / 1.8;
-          else
-            celc = temp.state.value.temperature
-          this.setCapabilityValue('target_temperature',celc).catch( reason => this.log('Error while updating capability: '+reason) );
-        }
+
+      const targetTemperature = findCapabilityValue(capabilities, 'targetTemperature')
+        ?? findCapabilityValue(capabilities, 'sliderTemperature');
+      if (targetTemperature && Number.isFinite(targetTemperature.temperature)) {
+        const celsius = targetTemperature.unit === 'Fahrenheit'
+          ? (targetTemperature.temperature - 32) / 1.8
+          : targetTemperature.temperature;
+        await update('target_temperature', celsius);
       }
-      if(this.hasCapability('measure_temperature'))
-      {
-        this.log('Processing the temp sensor state');
-        var temp = currentState.capabilitieslist.find(function(e) {return e.instance == "sensorTemperature" })
-        var celc = (temp.state.value - 32) / 1.8;
-        this.setCapabilityValue('measure_temperature',celc).catch( reason => this.log('Error while updating capability: '+reason) );
-      }
-      if(this.hasCapability('measure_humidity'))
-        {
-          this.log('Processing the humidity sensor state');
-          var hum = currentState.capabilitieslist.find(function(e) {return e.instance == "sensorHumidity" })
-          if (hum.state.value.currentHumidity === undefined) {
-            if (hum.state.value === undefined) {
-              console.log("currentHumidity was not received in the state: "+JSON.stringify(hum.state));
-            } else {
-              this.setCapabilityValue('measure_humidity',hum.state.value).catch( reason => this.log('Error while updating capability: '+reason) );
-            }
-          } else {
-            this.setCapabilityValue('measure_humidity',hum.state.value.currentHumidity).catch( reason => this.log('Error while updating capability: '+reason) );
-          }
-        }
-      
-    }).catch((err) => this.log('Error calling the state endpoint ['+JSON.stringify(err)+']'));
+      const sensorTemperature = findCapabilityValue(capabilities, 'sensorTemperature');
+      if (Number.isFinite(sensorTemperature)) await update('measure_temperature', (sensorTemperature - 32) / 1.8);
+      const sensorHumidity = findCapabilityValue(capabilities, 'sensorHumidity');
+      if (Number.isFinite(sensorHumidity)) await update('measure_humidity', sensorHumidity);
+      else if (Number.isFinite(sensorHumidity?.currentHumidity)) await update('measure_humidity', sensorHumidity.currentHumidity);
+      const targetHumidity = findCapabilityValue(capabilities, 'humidity');
+      if (Number.isFinite(targetHumidity)) await update('target_humidity', targetHumidity / 100);
+
+      this._refreshFailures = 0;
+      await this.setAvailable().catch(() => {});
+      return currentState;
+    } catch (error) {
+      this._refreshFailures = (this._refreshFailures || 0) + 1;
+      this.error(`State refresh failed (${this._refreshFailures}): ${error.message}`);
+      if (this._refreshFailures >= 3) await this.setUnavailable(`Govee state refresh failed: ${error.message}`).catch(() => {});
+      throw error;
+    }
+  }
+
+  async refreshFreshState() {
+    if (this._refreshPromise) await this._refreshPromise.catch(() => {});
+    return this.refreshState();
   }
 
   async addRemoveStandardCapabilities()
@@ -400,37 +360,37 @@ class GoveeDevice extends Device {
   {
     this.log('Now link capabilities with listeners');
     if (this.hasCapability('onoff'))
-      this.registerCapabilityListener('onoff', this.onCapabilityOnoff.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'onoff', this.onCapabilityOnoff.bind(this));
     if (this.hasCapability('dreamViewToggle.'+this.goveedevicetype))
-      this.registerCapabilityListener('dreamViewToggle.'+this.goveedevicetype, this.onCapabilityDreamview.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'dreamViewToggle.'+this.goveedevicetype, this.onCapabilityDreamview.bind(this));
     if (this.hasCapability('gradientToggle.'+this.goveedevicetype))
-      this.registerCapabilityListener('gradientToggle.'+this.goveedevicetype, this.onCapabilityGradient.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'gradientToggle.'+this.goveedevicetype, this.onCapabilityGradient.bind(this));
     if (this.hasCapability('dim'))
-      this.registerCapabilityListener('dim', this.onCapabilityDim.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'dim', this.onCapabilityDim.bind(this));
     if (this.hasCapability('light_temperature'))
-      this.registerCapabilityListener('light_temperature', this.onCapabilityLightTemperature.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'light_temperature', this.onCapabilityLightTemperature.bind(this));
     // Explicit listeners are required for capabilities added dynamically to
     // socket devices. A grouped listener can leave Homey without a handler.
     if (this.hasCapability('light_saturation'))
-      this.registerCapabilityListener('light_saturation', this.onCapabilitySaturation.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'light_saturation', this.onCapabilitySaturation.bind(this));
     if (this.hasCapability('light_hue'))
-      this.registerCapabilityListener('light_hue', this.onCapabilityHue.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'light_hue', this.onCapabilityHue.bind(this));
     if (this.hasCapability('target_humidity'))
-      this.registerCapabilityListener('target_humidity', this.onCapabilityTargetHumidity.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'target_humidity', this.onCapabilityTargetHumidity.bind(this));
     if (this.hasCapability('light_mode'))
-      this.registerCapabilityListener('light_mode', this.onCapabilityLightMode.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'light_mode', this.onCapabilityLightMode.bind(this));
     if (this.hasCapability('lightScenes.'+this.goveedevicetype))
-      this.registerCapabilityListener('lightScenes.'+this.goveedevicetype, this.onCapabilityLightScenes.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'lightScenes.'+this.goveedevicetype, this.onCapabilityLightScenes.bind(this));
     if (this.hasCapability('lightDiyScenes.'+this.goveedevicetype))
-      this.registerCapabilityListener('lightDiyScenes.'+this.goveedevicetype, this.onCapabilityDIYLightScenes.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'lightDiyScenes.'+this.goveedevicetype, this.onCapabilityDIYLightScenes.bind(this));
     if (this.hasCapability('nightlightScenes.'+this.goveedevicetype))
-      this.registerCapabilityListener('nightlightScenes.'+this.goveedevicetype, this.onCapabilityNightlightScenes.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'nightlightScenes.'+this.goveedevicetype, this.onCapabilityNightlightScenes.bind(this));
     if (this.hasCapability('oscillating'))
-      this.registerCapabilityListener('oscillating', this.onCapabilityOscillating.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'oscillating', this.onCapabilityOscillating.bind(this));
     if (this.hasCapability('lackWater.'+this.goveedevicetype))
-      this.registerCapabilityListener('lackWater.'+this.goveedevicetype, this.onLackWaterOnoff.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'lackWater.'+this.goveedevicetype, this.onLackWaterOnoff.bind(this));
     if (this.hasCapability('target_temperature'))
-      this.registerCapabilityListener('target_temperature', this.onCapabilityTargetTemperature.bind(this));
+      this.sharedDevice.registerDynamicCapabilityListener(this, 'target_temperature', this.onCapabilityTargetTemperature.bind(this));
 
   }
 
@@ -460,9 +420,8 @@ class GoveeDevice extends Device {
    */
   async onDeleted() {
     this.log('govee.device.'+this.data.model+': '+this.data.name+' has been deleted');
-    if (this._timer) {
-      clearInterval(this._timer)
-    }
+    this.homey.app.unregisterPollDevice(this);
+    if (this._setupRetryTimer) this.homey.clearTimeout(this._setupRetryTimer);
     // Unregister MQTT event listener
     if (this.sharedDevice) {
       this.sharedDevice.unregisterMqttEventListener(this);
@@ -473,6 +432,31 @@ class GoveeDevice extends Device {
     this.setIfHasCapability('alarm_tank_empty', value);
   }
 
+  async executeVerifiedCommand(label, send, verify, attempts = 2) {
+    try {
+      const result = await this._commandCoordinator.execute({
+        label,
+        send,
+        read: () => this.refreshFreshState(),
+        verify,
+        attempts,
+      });
+      await this.unsetWarning().catch(() => {});
+      return result;
+    } catch (error) {
+      await this.setWarning(`${label} failed verification: ${error.message}`).catch(() => {});
+      throw error;
+    }
+  }
+
+  async executeSerializedCommand(label, send) {
+    return this._commandCoordinator.execute({ label, send });
+  }
+
+  stateValue(currentState, instance) {
+    return findCapabilityValue(currentState?.capabilitieslist, instance);
+  }
+
     /**
    * Sets the target temperature of thermostat devices
    * @param {string} value the target temp value of the temperature within its defined range
@@ -480,8 +464,16 @@ class GoveeDevice extends Device {
    */
   async onCapabilityTargetTemperature( value, opts ) {
     const instance = this.temperatureInstance || 'targetTemperature';
-    await this.driver.setTargetTemperature(value, instance, this.data.model, this.data.mac, this.goveedevicetype);
-    this.setIfHasCapability('target_temperature', value);
+    await this.executeVerifiedCommand(
+      'Target temperature',
+      () => this.driver.setTargetTemperature(value, instance, this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, instance);
+        if (!observed || !Number.isFinite(observed.temperature)) return false;
+        const celsius = observed.unit === 'Fahrenheit' ? (observed.temperature - 32) / 1.8 : observed.temperature;
+        return nearlyEqual(celsius, value, 0.6);
+      },
+    );
   }
 
   /**
@@ -490,56 +482,69 @@ class GoveeDevice extends Device {
    * @param {*} opts 
    */
   async onCapabilityOnoff( value, opts ) {
-    if(value){
-      await this.driver.turn(1,this.data.model, this.data.mac, this.goveedevicetype);
-    } else {
-      await this.driver.turn(0,this.data.model, this.data.mac, this.goveedevicetype);
-    }
-    this.setIfHasCapability('onoff', value);
+    await this.executeVerifiedCommand(
+      'Power command',
+      () => this.driver.turn(value ? 1 : 0, this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, 'powerSwitch');
+        return observed !== undefined && Boolean(observed) === Boolean(value);
+      },
+    );
   }
 
   async onCapabilityDreamview( value, opts ) {
-    if(value){
-      await this.driver.toggle(1, 'dreamViewToggle', this.data.model, this.data.mac, this.goveedevicetype);
-    } else {
-      await this.driver.toggle(0, 'dreamViewToggle', this.data.model,this.data.mac, this.goveedevicetype);
-    }
-    this.setIfHasCapability('dreamViewToggle', value);
+    await this.executeVerifiedCommand(
+      'DreamView command',
+      () => this.driver.toggle(value ? 1 : 0, 'dreamViewToggle', this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, 'dreamViewToggle');
+        return observed !== undefined && Boolean(observed) === Boolean(value);
+      },
+    );
   }
 
   async onCapabilityOscillating( value, opts ) {
-    if(value){
-      await this.driver.toggle(1, 'oscillationToggle', this.data.model, this.data.mac, this.goveedevicetype);
-    } else {
-      await this.driver.toggle(0, 'oscillationToggle', this.data.model,this.data.mac, this.goveedevicetype);
-    }
-    this.setIfHasCapability('oscillating', value);
+    await this.executeVerifiedCommand(
+      'Oscillation command',
+      () => this.driver.toggle(value ? 1 : 0, 'oscillationToggle', this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, 'oscillationToggle');
+        return observed !== undefined && Boolean(observed) === Boolean(value);
+      },
+    );
   }
 
   async onCapabilityNightlight( value, opts ) {
-    if(value){
-      await this.driver.toggle(1, 'nightlightToggle', this.data.model, this.data.mac, this.goveedevicetype);
-    } else {
-      await this.driver.toggle(0, 'nightlightToggle', this.data.model,this.data.mac, this.goveedevicetype);
-    }
-    // Dynamic nightlight capabilities are device-type scoped (for example,
-    // nightlightToggle.socket). Updating the old generic name leaves Homey's
-    // quick action stale even when Govee accepted the command.
-    await this.setIfHasCapability('nightlightToggle.'+this.goveedevicetype, value);
+    await this.executeVerifiedCommand(
+      'Nightlight command',
+      () => this.driver.toggle(value ? 1 : 0, 'nightlightToggle', this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, 'nightlightToggle');
+        return observed !== undefined && Boolean(observed) === Boolean(value);
+      },
+    );
   }
 
   async onCapabilitySocketToggle(instance, value, opts) {
-    await this.driver.toggle(value ? 1 : 0, instance, this.data.model, this.data.mac, this.goveedevicetype);
-    await this.setIfHasCapability(instance+'.'+this.goveedevicetype, value);
+    await this.executeVerifiedCommand(
+      `${instance} command`,
+      () => this.driver.toggle(value ? 1 : 0, instance, this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, instance);
+        return observed !== undefined && Boolean(observed) === Boolean(value);
+      },
+    );
   }
 
   async onCapabilityGradient( value, opts ) {
-    if(value){
-      await this.driver.toggle(1, 'gradientToggle', this.data.model, this.data.mac, this.goveedevicetype);
-    } else {
-      await this.driver.toggle(0, 'gradientToggle', this.data.model, this.data.mac, this.goveedevicetype);
-    }
-    this.setIfHasCapability('gradientToggle.'+this.goveedevicetype, value);
+    await this.executeVerifiedCommand(
+      'Gradient command',
+      () => this.driver.toggle(value ? 1 : 0, 'gradientToggle', this.data.model, this.data.mac, this.goveedevicetype),
+      (state) => {
+        const observed = this.stateValue(state, 'gradientToggle');
+        return observed !== undefined && Boolean(observed) === Boolean(value);
+      },
+    );
   }
 
   /**
@@ -551,7 +556,7 @@ class GoveeDevice extends Device {
       //We need to check if this device uses dynamic light scenes
       this.setWarning('Will switch to scene '+this.lightScenes.options[value].name);
       this.log('Mode switched to item '+value+' that results in scene '+JSON.stringify(this.lightScenes.options[value]));
-      await this.driver.setLightScene(this.lightScenes.options[value].value, "lightScene", this.data.model, this.data.mac, this.goveedevicetype);
+      await this.executeSerializedCommand('Light scene command', () => this.driver.setLightScene(this.lightScenes.options[value].value, "lightScene", this.data.model, this.data.mac, this.goveedevicetype));
       this.unsetWarning();
     }
 
@@ -562,8 +567,11 @@ class GoveeDevice extends Device {
    */
   async onCapabilityTargetHumidity( value, opts ) {
     let perc_value = value*100;
-    await this.driver.range('humidity',perc_value,this.data.model, this.data.mac);
-    this.setIfHasCapability('target_humidity', value);
+    await this.executeVerifiedCommand(
+      'Target humidity command',
+      () => this.driver.range('humidity', perc_value, this.data.model, this.data.mac),
+      (state) => nearlyEqual(Number(this.stateValue(state, 'humidity')), perc_value, 1),
+    );
   }
   
   /**
@@ -574,7 +582,7 @@ class GoveeDevice extends Device {
       async onCapabilityDIYLightScenes( value, opts ) {
         this.setWarning('Will switch to diy scene '+this.diyScenes.options[value].name);
         this.log('Mode switched to item '+value+' that results in diy scene '+JSON.stringify(this.diyScenes.options[value]));
-        await this.driver.setLightScene(this.diyScenes.options[value].value, "diyScene", this.data.model, this.data.mac, this.goveedevicetype);
+        await this.executeSerializedCommand('DIY scene command', () => this.driver.setLightScene(this.diyScenes.options[value].value, "diyScene", this.data.model, this.data.mac, this.goveedevicetype));
         this.unsetWarning();
       }
 
@@ -586,7 +594,7 @@ class GoveeDevice extends Device {
         async onCapabilityNightlightScenes( value, opts ) {
           this.setWarning('Will switch to nightlight scene '+this.nightlightScenes.options[value].name);
           this.log('Mode switched to item '+value+' that results in diy scene '+JSON.stringify(this.nightlightScenes.options[value]));
-          await this.driver.setMode(this.nightlightScenes.options[value].value, "nightlightScene", this.data.model, this.data.mac, this.goveedevicetype);
+          await this.executeSerializedCommand('Nightlight scene command', () => this.driver.setMode(this.nightlightScenes.options[value].value, "nightlightScene", this.data.model, this.data.mac, this.goveedevicetype));
           this.unsetWarning();
         }
   
@@ -597,8 +605,15 @@ class GoveeDevice extends Device {
    * @param {*} opts 
    */
   async onCapabilityDim( value, opts ) {
-    await this.driver.brightness(value,this.data.model, this.data.mac);
-    this.setIfHasCapability('dim', value);
+    await this.executeVerifiedCommand(
+      'Brightness command',
+      () => this.driver.brightness(value, this.data.model, this.data.mac),
+      (state) => {
+        const observed = Number(this.stateValue(state, 'brightness'));
+        if (!Number.isFinite(observed)) return false;
+        return nearlyEqual(observed / (observed > 100 ? 255 : 100), value, 0.03);
+      },
+    );
   }
 
   /**
@@ -610,9 +625,7 @@ class GoveeDevice extends Device {
     const color = resolveHomeyColor({ saturation: value }, this.getState());
     var light = 1;
     this.log("Capability trigger: Saturation");
-    await this.driver.color(color.hue,color.saturation,light,this.data.model, this.data.mac);
-    await this.setIfHasCapability('light_hue', color.hue);
-    await this.setIfHasCapability('light_saturation', color.saturation);
+    await this.executeColorCommand(color, light);
   }
 
   /**
@@ -624,9 +637,7 @@ class GoveeDevice extends Device {
     const color = resolveHomeyColor({ hue: value }, this.getState());
     var light = 1;
     this.log("Capability trigger: Hue");
-    await this.driver.color(color.hue,color.saturation,light,this.data.model, this.data.mac);
-    await this.setIfHasCapability('light_hue', color.hue);
-    await this.setIfHasCapability('light_saturation', color.saturation);
+    await this.executeColorCommand(color, light);
   }
 
   /**
@@ -644,9 +655,20 @@ class GoveeDevice extends Device {
       },
       this.getState(),
     );
-    await this.driver.color(color.hue,color.saturation,light,this.data.model, this.data.mac);
-    await this.setIfHasCapability('light_hue', color.hue);
-    await this.setIfHasCapability('light_saturation', color.saturation);
+    await this.executeColorCommand(color, light);
+  }
+
+  async executeColorCommand(color, light = 1) {
+    await this.executeVerifiedCommand(
+      'Color command',
+      () => this.driver.color(color.hue, color.saturation, light, this.data.model, this.data.mac),
+      (state) => {
+        const observed = parseGoveeRgbState(state?.capabilitieslist, this.driver.colorCommandGetParser.bind(this.driver));
+        if (observed?.mode !== 'color') return false;
+        const hueDistance = Math.min(Math.abs(observed.hue - color.hue), 1 - Math.abs(observed.hue - color.hue));
+        return hueDistance <= 0.03 && nearlyEqual(observed.saturation, color.saturation, 0.05);
+      },
+    );
   }
 
   /**
@@ -663,8 +685,11 @@ class GoveeDevice extends Device {
     var relativeColorTemp = rangeMax-((rangeMax-rangeMin)*value);
     if(value>=0)
     {
-      await this.driver.colorTemp(relativeColorTemp,this.data.model, this.data.mac);
-      this.setIfHasCapability('light_temperature', value);
+      await this.executeVerifiedCommand(
+        'Color temperature command',
+        () => this.driver.colorTemp(relativeColorTemp, this.data.model, this.data.mac),
+        (state) => nearlyEqual(Number(this.stateValue(state, 'colorTemperatureK')), relativeColorTemp, 25),
+      );
     }
   }
 

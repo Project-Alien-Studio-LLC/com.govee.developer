@@ -4,6 +4,8 @@ const Homey = require('homey');
 const mqtt = require('mqtt');
 const { EventEmitter } = require('events');
 const gvCloud = require('./api/govee-api-v2');
+const { GoveePollScheduler } = require('./lib/govee-poll-scheduler');
+const { parseGoveeMqttMessage } = require('./lib/govee-mqtt');
 
 class GoveeApp extends Homey.App {
   /**
@@ -15,19 +17,25 @@ class GoveeApp extends Homey.App {
     this.mqttClient=null;
     this.localApiClient=null;
     this.cloudApi=null;
+    this._registeredGoveeFlowCards = new Set();
     //Create an event emitter to send received mqtt to the devices
     this.eventBus = new EventEmitter();
+    this.pollScheduler = new GoveePollScheduler({
+      setInterval: this.homey.setInterval.bind(this.homey),
+      clearInterval: this.homey.clearInterval.bind(this.homey),
+      logger: (message) => this.error(message),
+    });
 
     // Initialize cloud API for app-level flow cards
     this.initCloudApi();
 
     // Listen for API key changes to reinitialize cloud API
-    this.homey.settings.on('set', (key) => {
+    this._settingsListener = (key) => {
       if (key === 'api_key') {
-        this.cloudApi = null; // Force reinit on next use
-        this.log('API key updated, cloud API will reinitialize on next use');
+        void this.reinitializeCloudConnections();
       }
-    });
+    };
+    this.homey.settings.on('set', this._settingsListener);
 
     // Register Dreamview toggle action card
     this._toggleDreamviewDevice = this.homey.flow.getActionCard('toggle-dreamview-device');
@@ -73,58 +81,12 @@ class GoveeApp extends Homey.App {
       });
     }
 
-    // Handle uncaught errors from the govee-lan-control library
-    // This prevents the app from crashing due to library bugs or network issues
-    process.on('uncaughtException', (err) => {
-      // Handle UDP port already in use
-      if (err.code === 'EADDRINUSE' && err.message.includes('4002')) {
-        this.error('[GoveeApp] UDP port 4002 is already in use - local API disabled');
-        this.error('[GoveeApp] Another application (Home Assistant, another Govee app) may be using this port');
-        // Mark the local API client as failed if it exists
-        if (this.localApiClient) {
-          this.localApiClient.initError = err;
-          this.localApiClient.isReady = false;
-        }
-        return; // Don't re-throw, handle gracefully
-      }
-
-      // Handle govee-lan-control library bug: accessing state of undefined device
-      // This happens when the library receives a UDP message for an unknown device
-      if (err instanceof TypeError && err.message.includes("Cannot read properties of undefined (reading 'state')") &&
-          err.stack && err.stack.includes('govee-lan-control')) {
-        this.error('[GoveeApp] Govee LAN library received message for unknown device (ignoring)');
-        return; // Don't re-throw, this is a known library bug
-      }
-
-      // Handle JSON parsing errors from corrupted UDP messages in govee-lan-control
-      // This happens when the library receives garbled or partial network data
-      if (err instanceof SyntaxError && err.stack && err.stack.includes('govee-lan-control')) {
-        this.error('[GoveeApp] Govee LAN library received malformed data (ignoring):', err.message);
-        return; // Don't re-throw, network corruption is expected occasionally
-      }
-
-      // Handle other govee-lan-control errors gracefully
-      if (err.stack && err.stack.includes('govee-lan-control')) {
-        this.error('[GoveeApp] Govee LAN library error (ignoring):', err.message);
-        return; // Don't re-throw library errors
-      }
-
-      // Re-throw other uncaught exceptions
-      this.error('[GoveeApp] Uncaught exception:', err.message);
-      throw err;
-    });
   }
 
   async onUninit() {
+    this.pollScheduler?.stop();
     //We need to disconnect our hosts
-    if (this.mqttClient != null) {
-      try {
-        this.mqttClient.end();
-        this.mqttClient.destroy();
-      } catch (err) {
-        this.error('Error cleaning up MQTT client:', err.message);
-      }
-    }
+    await this.disconnectMqttClient();
     if (this.localApiClient != null) {
       try {
         this.localApiClient.destroy();
@@ -137,16 +99,66 @@ class GoveeApp extends Homey.App {
     this.log('Cleaned up open connections');
   }
 
+  registerPollDevice(device, interval) {
+    const data = device.getData();
+    const key = `${device.goveedevicetype}:${data.mac || data.id}`;
+    device._pollSchedulerKey = key;
+    this.pollScheduler.register(key, () => device.refreshState(), interval);
+  }
+
+  unregisterPollDevice(device) {
+    if (device._pollSchedulerKey) this.pollScheduler.unregister(device._pollSchedulerKey);
+  }
+
+  claimFlowRegistration(key) {
+    if (this._registeredGoveeFlowCards.has(key)) return false;
+    this._registeredGoveeFlowCards.add(key);
+    return true;
+  }
+
+  releaseFlowRegistration(key) {
+    this._registeredGoveeFlowCards.delete(key);
+  }
+
+  async reinitializeCloudConnections() {
+    this.cloudApi = null;
+    this.initCloudApi();
+    const drivers = this.homey.drivers?.getDrivers?.() || {};
+    await Promise.allSettled(Object.values(drivers).map((driver) => driver.reInit?.()));
+    await this.disconnectMqttClient();
+    if (this.eventBus.eventNames().length > 0) await this.setupMqttReceiver();
+    this.log('Govee cloud connections reinitialized after API key update');
+  }
+
+  async disconnectMqttClient() {
+    const client = this.mqttClient;
+    this.mqttClient = null;
+    if (!client) return;
+    try {
+      await new Promise((resolve) => client.end(true, {}, resolve));
+    } catch (err) {
+      this.error('Error cleaning up MQTT client:', err.message);
+      try { client.destroy(); } catch (_error) { /* already closing */ }
+    }
+  }
+
   async setupMqttReceiver(){
     //We only need to do this once for cloud devices
     if(this.mqttClient!==null)
       return;
+    const apiKey = this.homey.settings.get('api_key');
+    if (!apiKey) {
+      this.error('Cannot connect Govee MQTT: API key is not configured');
+      return;
+    }
     const emqx_url = 'mqtt.openapi.govee.com'; 
 
     const options = {  
         clean: true,  
-        username: this.homey.settings.get('api_key'),  
-        password: this.homey.settings.get('api_key'),  
+        username: apiKey,
+        password: apiKey,
+        reconnectPeriod: 5000,
+        connectTimeout: 10000,
     }
     this.log('Connecting the mqtt broker for status updates');
 
@@ -154,20 +166,23 @@ class GoveeApp extends Homey.App {
     const client = mqtt.connect(connectUrl, options)
     client.on('connect', () => {  
       this.log('Connected to the mqtt broker.')  
-      client.subscribe("GA/"+this.homey.settings.get('api_key'), (err) => {  
-          if (!err) {  
-            this.log('Subscribed to mqtt topic apiKey')  
-          }  
+      client.subscribe("GA/"+apiKey, (err) => {
+          if (err) this.error('Failed to subscribe to Govee MQTT updates:', err.message);
+          else this.log('Subscribed to Govee MQTT status updates');
       })  
     })
+    client.on('error', (err) => this.error('Govee MQTT connection error:', err.message));
+    client.on('offline', () => this.log('Govee MQTT connection is offline; reconnecting'));
+    client.on('reconnect', () => this.log('Reconnecting to Govee MQTT'));
     this.mqttClient=client;
-    this.mqttClient.on('message', (topic, message) => {
-      this.log(`Received message from topic ${topic}`)
-      const jsonString = message.toString();
-      const payload = JSON.parse(jsonString);
-      this.log(JSON.stringify(payload));
-      this.log('Message is for device ['+payload.device+']');
-      this.eventBus.emit('device_event_'+payload.device, payload);
+    this.mqttClient.on('message', (_topic, message) => {
+      try {
+        const payload = parseGoveeMqttMessage(message);
+        this.log('Received a validated Govee MQTT device event');
+        this.eventBus.emit('device_event_'+payload.device, payload);
+      } catch (error) {
+        this.error('Ignored invalid Govee MQTT message:', error.message);
+      }
     })
   }
 
@@ -177,7 +192,7 @@ class GoveeApp extends Homey.App {
   initCloudApi() {
     const apiKey = this.homey.settings.get('api_key');
     if (apiKey) {
-      this.cloudApi = new gvCloud.GoveeClient({ api_key: apiKey });
+      this.cloudApi = new gvCloud.GoveeClient({ api_key: apiKey, log: (message) => this.log(message) });
       this.log('Cloud API initialized for app-level flow cards');
     }
   }
