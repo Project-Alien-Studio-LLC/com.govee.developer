@@ -409,15 +409,12 @@ class GoveeDevice extends Device {
       this.registerCapabilityListener('dim', this.onCapabilityDim.bind(this));
     if (this.hasCapability('light_temperature'))
       this.registerCapabilityListener('light_temperature', this.onCapabilityLightTemperature.bind(this));
-    if(this.hasCapability('light_hue') && this.hasCapability('light_saturation'))
-    {
-      this.registerMultipleCapabilityListener(['light_saturation', 'light_hue'], this.onCapabilityHueSaturation.bind(this))
-    } else {
-      if (this.hasCapability('light_saturation'))
-        this.registerCapabilityListener('light_saturation', this.onCapabilitySaturation.bind(this));
-      if (this.hasCapability('light_hue'))
-        this.registerCapabilityListener('light_hue', this.onCapabilityHue.bind(this));
-    }
+    // Explicit listeners are required for capabilities added dynamically to
+    // socket devices. A grouped listener can leave Homey without a handler.
+    if (this.hasCapability('light_saturation'))
+      this.registerCapabilityListener('light_saturation', this.onCapabilitySaturation.bind(this));
+    if (this.hasCapability('light_hue'))
+      this.registerCapabilityListener('light_hue', this.onCapabilityHue.bind(this));
     if (this.hasCapability('target_humidity'))
       this.registerCapabilityListener('target_humidity', this.onCapabilityTargetHumidity.bind(this));
     if (this.hasCapability('light_mode'))
