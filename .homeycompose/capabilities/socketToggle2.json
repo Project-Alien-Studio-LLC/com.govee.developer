@@ -1,0 +1,9 @@
+{
+  "type": "boolean",
+  "title": {
+    "en": "Outlet 2"
+  },
+  "getable": true,
+  "setable": true,
+  "uiComponent": "button"
+}

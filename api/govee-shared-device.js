@@ -2,6 +2,13 @@ class GoveeSharedDeviceClient {
     constructor() {
     }
 
+    registerDynamicCapabilityListener(device, capability, listener) {
+      device._dynamicCapabilityListeners = device._dynamicCapabilityListeners || new Set();
+      if (device._dynamicCapabilityListeners.has(capability)) return;
+      device.registerCapabilityListener(capability, listener);
+      device._dynamicCapabilityListeners.add(capability);
+    }
+
     async refreshDynamicCapabilities(currentState,device)
     {
       //nightlightToggle
@@ -12,6 +19,17 @@ class GoveeSharedDeviceClient {
           device.log(JSON.stringify(nightlight))
           device.setCapabilityValue('nightlightToggle.'+device.goveedevicetype, (nightlight.state.value == 1)).catch( reason => device.log('Error while updating capability: '+reason) );
         }
+      for (const instance of ['socketToggle1', 'socketToggle2']) {
+        const capability = instance+'.'+device.goveedevicetype;
+        if (device.hasCapability(capability)) {
+          const socketToggle = currentState.capabilitieslist.find((entry) => entry.instance === instance);
+          if (socketToggle && socketToggle.state) {
+            device.setCapabilityValue(capability, socketToggle.state.value == 1).catch(
+              (reason) => device.log('Error while updating '+capability+': '+reason),
+            );
+          }
+        }
+      }
     }
 
     async createDynamicCapabilities(model,mac,capabilitieslist,device)
@@ -40,9 +58,37 @@ class GoveeSharedDeviceClient {
         if(capabilitieslist.find(function(e) { return e.instance == "nightlightToggle" })) {
           if(!device.hasCapability('nightlightToggle.'+device.goveedevicetype))
             await device.addCapability('nightlightToggle.'+device.goveedevicetype);
+          // Dynamic capabilities can be restored after setupCapabilities has
+          // already run. Register here as well so Homey never presents a
+          // nightlight button without a handler.
+          if (device.onCapabilityNightlight) {
+            this.registerDynamicCapabilityListener(
+              device,
+              'nightlightToggle.'+device.goveedevicetype,
+              device.onCapabilityNightlight.bind(device),
+            );
+          }
           await this.setupFlowNightLight(device);
         } else if(device.hasCapability('nightlightToggle.'+device.goveedevicetype))
-          await device.removeCapability('nightlightToggle.'+device.goveedevicetype); 
+          await device.removeCapability('nightlightToggle.'+device.goveedevicetype);
+        for (const instance of ['socketToggle1', 'socketToggle2']) {
+          const capability = instance+'.'+device.goveedevicetype;
+          if (capabilitieslist.find((entry) => entry.instance === instance)) {
+            if (!device.hasCapability(capability)) {
+              await device.addCapability(capability);
+            }
+            if (device.onCapabilitySocketToggle) {
+              this.registerDynamicCapabilityListener(
+                device,
+                capability,
+                device.onCapabilitySocketToggle.bind(device, instance),
+              );
+            }
+            await this.setupFlowSocketToggle(device, instance);
+          } else if (device.hasCapability(capability)) {
+            await device.removeCapability(capability);
+          }
+        }
         //Now setup the dreamview button
         // DreamView is not available via local API, but can work for cloud-enhanced local devices
         const canUseDreamView = device.goveedevicetype !== 'localdevice' || device.cloudEnhance;
@@ -688,6 +734,17 @@ createSegmentCollection(segmentField)
           });
         }
       });
+  }
+
+  async setupFlowSocketToggle(device, instance) {
+    const capability = instance+'.'+device.goveedevicetype;
+    const cardId = 'activate-'+instance+'.'+device.goveedevicetype;
+    const actionCard = await device.homey.flow.getActionCard(cardId);
+    actionCard.registerRunListener(async (args) => {
+      await args.device.driver.toggle(args.activate ? 1 : 0, instance, args.device.data.model, args.device.data.mac, args.device.goveedevicetype);
+      await args.device.setIfHasCapability(capability, args.activate);
+      return true;
+    });
   }
 
   async setupFlowSwitchDiyScene(device) {

@@ -399,8 +399,6 @@ class GoveeDevice extends Device {
       this.registerCapabilityListener('onoff', this.onCapabilityOnoff.bind(this));
     if (this.hasCapability('dreamViewToggle.'+this.goveedevicetype))
       this.registerCapabilityListener('dreamViewToggle.'+this.goveedevicetype, this.onCapabilityDreamview.bind(this));
-    if (this.hasCapability('nightlightToggle.'+this.goveedevicetype))
-      this.registerCapabilityListener('nightlightToggle.'+this.goveedevicetype, this.onCapabilityNightlight.bind(this));
     if (this.hasCapability('gradientToggle.'+this.goveedevicetype))
       this.registerCapabilityListener('gradientToggle.'+this.goveedevicetype, this.onCapabilityGradient.bind(this));
     if (this.hasCapability('dim'))
@@ -527,6 +525,11 @@ class GoveeDevice extends Device {
     // nightlightToggle.socket). Updating the old generic name leaves Homey's
     // quick action stale even when Govee accepted the command.
     await this.setIfHasCapability('nightlightToggle.'+this.goveedevicetype, value);
+  }
+
+  async onCapabilitySocketToggle(instance, value, opts) {
+    await this.driver.toggle(value ? 1 : 0, instance, this.data.model, this.data.mac, this.goveedevicetype);
+    await this.setIfHasCapability(instance+'.'+this.goveedevicetype, value);
   }
 
   async onCapabilityGradient( value, opts ) {

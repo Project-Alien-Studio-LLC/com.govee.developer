@@ -60,6 +60,44 @@
             }
           }
         ]
+      },
+      {
+        "id": "activate-socketToggle1.socket",
+        "title": {
+          "en": "Toggle outlet 1"
+        },
+        "titleFormatted": {
+          "en": "Set outlet 1 to [[activate]]"
+        },
+        "$filter": "capabilities=socketToggle1.socket",
+        "args": [
+          {
+            "type": "checkbox",
+            "name": "activate",
+            "title": {
+              "en": "On"
+            }
+          }
+        ]
+      },
+      {
+        "id": "activate-socketToggle2.socket",
+        "title": {
+          "en": "Toggle outlet 2"
+        },
+        "titleFormatted": {
+          "en": "Set outlet 2 to [[activate]]"
+        },
+        "$filter": "capabilities=socketToggle2.socket",
+        "args": [
+          {
+            "type": "checkbox",
+            "name": "activate",
+            "title": {
+              "en": "On"
+            }
+          }
+        ]
       }
     ]
 }
