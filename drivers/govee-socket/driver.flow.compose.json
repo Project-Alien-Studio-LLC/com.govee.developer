@@ -23,6 +23,33 @@
         "$filter": "capabilities=alarm_online.socket"
       }
     ],
+    "conditions": [
+      {
+        "id": "nightlightscene-active.socket",
+        "title": {
+          "en": "A specific nightlight scene is active"
+        },
+        "titleFormatted": {
+          "en": "The nightlight scene [[nightlightScene]] !{{Is|Isn't}} active"
+        },
+        "hint": {
+          "en": "Current active nightlight scene"
+        },
+        "args": [
+          {
+            "type": "autocomplete",
+            "name": "nightlightScene",
+            "title": {
+              "en": "Nightlight scene"
+            },
+            "placeholder": {
+              "en": "Nightlight scene"
+            }
+          }
+        ],
+        "$filter": "capabilities=nightlightScenes.socket"
+      }
+    ],
     "actions": [
       {
         "id": "activate-nightlight.socket",
@@ -60,6 +87,44 @@
             }
           }
         ]
+      },
+      {
+        "id": "switch-to-nightlight-scene.socket",
+        "title": {
+          "en": "Switch to light scene"
+        },
+        "hint": {
+          "en": "Switches to the selected nightlight scene"
+        },
+        "titleFormatted": {
+          "en": "Switch to light scene [[nightlightScene]]"
+        },
+        "$filter": "capabilities=nightlightScenes.socket",
+        "args": [
+          {
+            "type": "autocomplete",
+            "name": "nightlightScene",
+            "title": {
+              "en": "Scene"
+            },
+            "placeholder": {
+              "en": "Forest"
+            }
+          }
+        ]
+      },
+      {
+        "id": "switch-to-random-nightlight-scene.socket",
+        "title": {
+          "en": "Switch to random light scene"
+        },
+        "hint": {
+          "en": "Switches to a random nightlight scene"
+        },
+        "titleFormatted": {
+          "en": "Switch to random light scene"
+        },
+        "$filter": "capabilities=nightlightScenes.socket"
       },
       {
         "id": "activate-socketToggle1.socket",
