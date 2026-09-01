@@ -667,10 +667,11 @@ createSegmentCollection(segmentField)
     device._activateNightlight
       .registerRunListener(async (args, state) => {
         device.log('attempt to toggle nightlight: '+args.activate);
-        device.setIfHasCapability('nightlightToggle', args.activate);
+        const capability = 'nightlightToggle.'+device.goveedevicetype;
         if(args.activate){
           return new Promise((resolve, reject) => {
             device.driver.toggle(1, 'nightlightToggle', args.device.data.model, args.device.data.mac, args.device.goveedevicetype).then(() => {
+              args.device.setIfHasCapability(capability, true);
               resolve(true);
             }, (_error) => {
               reject(_error);
@@ -679,6 +680,7 @@ createSegmentCollection(segmentField)
         } else {
           return new Promise((resolve, reject) => {
             device.driver.toggle(0, 'nightlightToggle', args.device.data.model,args.device.data.mac, args.device.goveedevicetype).then(() => {
+              args.device.setIfHasCapability(capability, false);
               resolve(true);
             }, (_error) => {
               reject(_error);

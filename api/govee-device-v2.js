@@ -523,7 +523,10 @@ class GoveeDevice extends Device {
     } else {
       await this.driver.toggle(0, 'nightlightToggle', this.data.model,this.data.mac, this.goveedevicetype);
     }
-    this.setIfHasCapability('nightlightToggle', value);
+    // Dynamic nightlight capabilities are device-type scoped (for example,
+    // nightlightToggle.socket). Updating the old generic name leaves Homey's
+    // quick action stale even when Govee accepted the command.
+    await this.setIfHasCapability('nightlightToggle.'+this.goveedevicetype, value);
   }
 
   async onCapabilityGradient( value, opts ) {
