@@ -13,6 +13,7 @@ const {
   exposesMasterPowerControl,
   filterSupportedNightlightScenes,
   supportsRemoteNightlightPower,
+  usesOptimisticNightlightPower,
 } = require('../lib/govee-device-quirks');
 const { GoveeWarningRecovery } = require('../lib/govee-warning-recovery');
 
@@ -39,9 +40,11 @@ test('state helper tolerates partial capability payloads', () => {
   assert.equal(nearlyEqual(undefined, 0.5), false);
 });
 
-test('H5089 hides only its unsupported remote nightlight power toggle', () => {
-  assert.equal(supportsRemoteNightlightPower('H5089'), false);
+test('H5089 exposes a dedicated optimistic nightlight power toggle', () => {
+  assert.equal(supportsRemoteNightlightPower('H5089'), true);
+  assert.equal(usesOptimisticNightlightPower('H5089'), true);
   assert.equal(supportsRemoteNightlightPower('H7140'), true);
+  assert.equal(usesOptimisticNightlightPower('H7140'), false);
 });
 
 test('H5089 does not expose its infrastructure master switch as Homey onoff', () => {
@@ -236,11 +239,13 @@ test('cloud API blocks H5089 master OFF but dispatches both outlet commands', as
 
   await client.devicesToggle(0, 'socketToggle1', 'H5089', 'device-id');
   await client.devicesToggle(1, 'socketToggle2', 'H5089', 'device-id');
+  await client.devicesToggle(0, 'nightlightToggle', 'H5089', 'device-id');
   assert.deepEqual(
     requests.map((request) => request.payload.capability),
     [
       { type: 'devices.capabilities.toggle', instance: 'socketToggle1', value: 0 },
       { type: 'devices.capabilities.toggle', instance: 'socketToggle2', value: 1 },
+      { type: 'devices.capabilities.toggle', instance: 'nightlightToggle', value: 0 },
     ],
   );
 });

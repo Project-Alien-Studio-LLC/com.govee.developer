@@ -8,6 +8,7 @@ const { findCapabilityValue, nearlyEqual } = require('../lib/govee-state');
 const {
   assertPowerCommandAllowed,
   exposesMasterPowerControl,
+  usesOptimisticNightlightPower,
 } = require('../lib/govee-device-quirks');
 const GoveeSharedDevice = require('./govee-shared-device');
 
@@ -528,6 +529,17 @@ class GoveeDevice extends Device {
   }
 
   async onCapabilityNightlight( value, opts ) {
+    if (usesOptimisticNightlightPower(this.data.model)) {
+      await this.executeSerializedCommand(
+        'Nightlight command',
+        () => this.driver.toggle(value ? 1 : 0, 'nightlightToggle', this.data.model, this.data.mac, this.goveedevicetype),
+      );
+      await this.setCapabilityValue('nightlightToggle.'+this.goveedevicetype, Boolean(value));
+      this.homey.setTimeout(() => {
+        void this.refreshState().catch((error) => this.log(`Nightlight state reconciliation failed: ${error.message}`));
+      }, 5000);
+      return;
+    }
     await this.executeVerifiedCommand(
       'Nightlight command',
       () => this.driver.toggle(value ? 1 : 0, 'nightlightToggle', this.data.model, this.data.mac, this.goveedevicetype),

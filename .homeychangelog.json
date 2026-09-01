@@ -289,5 +289,8 @@
   },
   "2.17.20": {
     "en": "fixed H5089 controls: Outlet 1 and Outlet 2 retain independent on/off control, while the master power switch is hidden and protected from accidental off commands"
+  },
+  "2.17.21": {
+    "en": "restored the H5089 Nightlight on/off quick control using its dedicated nightlightToggle capability while keeping master power hidden and protected"
   }
 }
