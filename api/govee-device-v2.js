@@ -1,6 +1,7 @@
 'use strict';
 
 const { Device } = require('homey');
+const { parseGoveeRgbState, resolveHomeyColor } = require('../lib/govee-color');
 const GoveeSharedDevice = require('./govee-shared-device');
 
 class GoveeDevice extends Device {
@@ -175,25 +176,28 @@ class GoveeDevice extends Device {
       if(this.hasCapability('light_hue'))
       {
         this.log('Processing the colorRGB state');
-        var colorRGB = currentState.capabilitieslist.find(function(e) { return e.instance == "colorRgb" })
-        var colorTempOptions = currentState.capabilitieslist.find(function(e) {return e.instance == "colorTemperatureK" })
-        if(colorTempOptions.state.value==0)
+        const colorState = parseGoveeRgbState(
+          currentState.capabilitieslist,
+          this.driver.colorCommandGetParser.bind(this.driver),
+        );
+        if(colorState?.mode === 'color')
         {
-          var colorHSV=this.driver.colorCommandGetParser(colorRGB.state.value);
-          this.log(JSON.stringify(colorHSV))
+          this.log(JSON.stringify(colorState))
           if(this.hasCapability('light_mode'))
             this.setCapabilityValue('light_mode', 'color').catch( reason => this.log('Error while updating capability: '+reason) );
             //Tell homey we are in color mode
-          this.setCapabilityValue('light_saturation', colorHSV.s).catch( reason => this.log('Error while updating capability: '+reason) );
-          this.setCapabilityValue('light_hue', (colorHSV.h/360)).catch( reason => this.log('Error while updating capability: '+reason) );
+          this.setCapabilityValue('light_saturation', colorState.saturation).catch( reason => this.log('Error while updating capability: '+reason) );
+          this.setCapabilityValue('light_hue', colorState.hue).catch( reason => this.log('Error while updating capability: '+reason) );
         }
-        else {
+        else if(colorState?.mode === 'temperature') {
           this.log('no color rgb known');
           if(this.hasCapability('light_mode'))
             this.setCapabilityValue('light_mode', 'temperature').catch( reason => this.log('Error while updating capability: '+reason) );
             //Tell homey we are not in color mode
           this.setCapabilityValue('light_hue', null).catch( reason => this.log('Error while updating capability: '+reason) );
           this.setCapabilityValue('light_saturation', null).catch( reason => this.log('Error while updating capability: '+reason) );
+        } else {
+          this.log('No valid color RGB state was returned');
         }
       }
 
@@ -606,12 +610,12 @@ class GoveeDevice extends Device {
    * @param {*} opts 
    */
   async onCapabilitySaturation( value, opts ) {
-    //Since we need full RGB values for Govee, Lets retrieve the hue value
-    var hue = this.getState().light_hue;
+    const color = resolveHomeyColor({ saturation: value }, this.getState());
     var light = 1;
     this.log("Capability trigger: Saturation");
-    await this.driver.color(hue,value,light,this.data.model, this.data.mac);
-    this.setIfHasCapability('light_saturation', value);
+    await this.driver.color(color.hue,color.saturation,light,this.data.model, this.data.mac);
+    await this.setIfHasCapability('light_hue', color.hue);
+    await this.setIfHasCapability('light_saturation', color.saturation);
   }
 
   /**
@@ -620,12 +624,12 @@ class GoveeDevice extends Device {
    * @param {*} opts 
    */
   async onCapabilityHue( value, opts ) {
-    //Since we need full RGB values for Govee, lets retrieve the saturation
-    var saturation = this.getState().light_saturation;
+    const color = resolveHomeyColor({ hue: value }, this.getState());
     var light = 1;
     this.log("Capability trigger: Hue");
-    await this.driver.color(value,saturation,light,this.data.model, this.data.mac);
-    this.setIfHasCapability('light_hue', value);
+    await this.driver.color(color.hue,color.saturation,light,this.data.model, this.data.mac);
+    await this.setIfHasCapability('light_hue', color.hue);
+    await this.setIfHasCapability('light_saturation', color.saturation);
   }
 
   /**
@@ -636,17 +640,16 @@ class GoveeDevice extends Device {
   async onCapabilityHueSaturation( newValues, opts ) {
     var light = 1;
     this.log("Capability trigger: Hue & Saturation [hue:"+newValues.light_hue+" - saturation: "+newValues.light_saturation);
-    let sat = newValues.light_saturation;
-    let hue = newValues.light_hue;
-    //Sometimes we do not get both values, in case of a set random color for example.
-    if (sat==undefined) 
-      return this.onCapabilityHue(hue);
-    if(hue==undefined)
-      return this.onCapabilitySaturation(sat);
-    //Else we got both
-    await this.driver.color(hue,sat,light,this.data.model, this.data.mac);
-    this.setIfHasCapability('light_hue', hue);
-    this.setIfHasCapability('light_saturation', sat);
+    const color = resolveHomeyColor(
+      {
+        hue: newValues.light_hue,
+        saturation: newValues.light_saturation,
+      },
+      this.getState(),
+    );
+    await this.driver.color(color.hue,color.saturation,light,this.data.model, this.data.mac);
+    await this.setIfHasCapability('light_hue', color.hue);
+    await this.setIfHasCapability('light_saturation', color.saturation);
   }
 
   /**
