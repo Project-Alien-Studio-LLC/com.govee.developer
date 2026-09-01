@@ -6,6 +6,7 @@
 //https://openapi.api.govee.com/router/api/v1/user/devices
 
 const fetch = require('isomorphic-unfetch');
+const { randomUUID } = require('node:crypto');
 
 class GoveeClient {
   constructor(config) {
@@ -90,7 +91,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
         //console.log('attempt to retrieve state for device ['+device+':'+model+']');
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
               "sku": model,
               "device": device
@@ -107,7 +108,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
         //console.log('attempt to retrieve light modes for device ['+device+':'+model+']');
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
               "sku": model,
               "device": device
@@ -124,7 +125,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
         //console.log('attempt to retrieve DiY light modes for device ['+device+':'+model+']');
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
               "sku": model,
               "device": device
@@ -139,7 +140,7 @@ class GoveeClient {
   setSegmentColor(segment, color, model, device) {
     return new Promise((resolve, reject) => {
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -162,7 +163,7 @@ class GoveeClient {
   setSegmentBrightness(segment, brightness, model, device) {
     return new Promise((resolve, reject) => {
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -186,7 +187,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
       //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+scene)
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -207,7 +208,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
       //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+scene)
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -230,7 +231,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
       //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+scene)
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -251,7 +252,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
       //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+scene)
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -275,7 +276,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
       //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+modeValue)
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -302,7 +303,7 @@ class GoveeClient {
       } else {
         //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+mode)
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
             "sku": model,
             "device": device,
@@ -327,7 +328,7 @@ class GoveeClient {
       } else {
         //console.log('attempt to switch device ['+device+':'+model+'] to new mode: '+mode)
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
             "sku": model,
             "device": device,
@@ -368,7 +369,7 @@ class GoveeClient {
   range(instance, value, model, device) {
     return new Promise((resolve, reject) => {
       let params = {
-        "requestId": "uuid",
+        "requestId": randomUUID(),
         "payload": {
           "sku": model,
           "device": device,
@@ -392,7 +393,7 @@ class GoveeClient {
       } else {
         //console.log('attempt dim device ['+device+':'+model+'] to new level: '+dim)
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
             "sku": model,
             "device": device,
@@ -415,7 +416,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
         //console.log('attempt set color temp of device ['+device+':'+model+'] to new temp: '+colortemp)
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
             "sku": model,
             "device": device,
@@ -437,7 +438,7 @@ class GoveeClient {
     return new Promise((resolve, reject) => {
         //console.log('attempt set color of device ['+device+':'+model+'] to new color: '+JSON.stringify(color));
         let params = {
-          "requestId": "uuid",
+          "requestId": randomUUID(),
           "payload": {
             "sku": model,
             "device": device,
