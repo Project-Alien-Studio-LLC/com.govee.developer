@@ -8,6 +8,7 @@ const { GoveePollScheduler } = require('../lib/govee-poll-scheduler');
 const { GoveeCommandCoordinator } = require('../lib/govee-command-coordinator');
 const { GoveeClient } = require('../api/govee-api-v2');
 const { SharedDevice } = require('../api/govee-shared-device');
+const { supportsRemoteNightlightPower } = require('../lib/govee-device-quirks');
 
 test('MQTT parser accepts validated device events and rejects malformed input', () => {
   const payload = parseGoveeMqttMessage(Buffer.from(JSON.stringify({
@@ -30,6 +31,11 @@ test('state helper tolerates partial capability payloads', () => {
   assert.equal(findCapabilityValue([{ instance: 'powerSwitch', state: { value: 1 } }], 'powerSwitch'), 1);
   assert.equal(nearlyEqual(0.51, 0.5, 0.02), true);
   assert.equal(nearlyEqual(undefined, 0.5), false);
+});
+
+test('H5089 hides only its unsupported remote nightlight power toggle', () => {
+  assert.equal(supportsRemoteNightlightPower('H5089'), false);
+  assert.equal(supportsRemoteNightlightPower('H7140'), true);
 });
 
 test('poll scheduler runs due device refreshes serially', async () => {

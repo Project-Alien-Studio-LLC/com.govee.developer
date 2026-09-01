@@ -1,3 +1,5 @@
+const { supportsRemoteNightlightPower } = require('../lib/govee-device-quirks');
+
 class GoveeSharedDeviceClient {
     constructor() {
     }
@@ -66,7 +68,7 @@ class GoveeSharedDeviceClient {
         } else if(device.hasCapability('segmentControlBrightness.'+device.goveedevicetype))
           await device.removeCapability('segmentControlBrightness.'+device.goveedevicetype); 
         //Now setup the NightLight button
-        if(capabilitieslist.find(function(e) { return e.instance == "nightlightToggle" })) {
+        if(capabilitieslist.find(function(e) { return e.instance == "nightlightToggle" }) && supportsRemoteNightlightPower(model)) {
           if(!device.hasCapability('nightlightToggle.'+device.goveedevicetype))
             await device.addCapability('nightlightToggle.'+device.goveedevicetype);
           // Dynamic capabilities can be restored after setupCapabilities has
@@ -80,8 +82,12 @@ class GoveeSharedDeviceClient {
             );
           }
           await this.setupFlowNightLight(device);
-        } else if(device.hasCapability('nightlightToggle.'+device.goveedevicetype))
+        } else if(device.hasCapability('nightlightToggle.'+device.goveedevicetype)) {
+          if (!supportsRemoteNightlightPower(model)) {
+            device.log(`Remote nightlight power is disabled for ${model} because its firmware ignores the command`);
+          }
           await device.removeCapability('nightlightToggle.'+device.goveedevicetype);
+        }
         for (const instance of ['socketToggle1', 'socketToggle2']) {
           const capability = instance+'.'+device.goveedevicetype;
           if (capabilitieslist.find((entry) => entry.instance === instance)) {
