@@ -9,6 +9,8 @@ const { GoveeCommandCoordinator } = require('../lib/govee-command-coordinator');
 const { GoveeClient } = require('../api/govee-api-v2');
 const { SharedDevice } = require('../api/govee-shared-device');
 const {
+  assertPowerCommandAllowed,
+  exposesMasterPowerControl,
   filterSupportedNightlightScenes,
   supportsRemoteNightlightPower,
 } = require('../lib/govee-device-quirks');
@@ -42,6 +44,25 @@ test('H5089 hides only its unsupported remote nightlight power toggle', () => {
   assert.equal(supportsRemoteNightlightPower('H7140'), true);
 });
 
+test('H5089 does not expose its infrastructure master switch as Homey onoff', () => {
+  assert.equal(exposesMasterPowerControl('H5089'), false);
+  assert.equal(exposesMasterPowerControl('H5082'), true);
+});
+
+test('H5089 firewall blocks master OFF but preserves both outlet toggles', () => {
+  assert.throws(
+    () => assertPowerCommandAllowed('H5089', 'powerSwitch', false),
+    (error) => error.code === 'GOVEE_POWER_OFF_PROTECTED',
+  );
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5089', 'powerSwitch', true));
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5089', 'socketToggle1', false));
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5089', 'socketToggle1', true));
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5089', 'socketToggle2', false));
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5089', 'socketToggle2', true));
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5089', 'nightlightToggle', false));
+  assert.doesNotThrow(() => assertPowerCommandAllowed('H5082', 'powerSwitch', false));
+});
+
 test('H5089 hides the scene value its firmware accepts without applying', () => {
   const scenes = [
     { name: 'Forest', value: 0 },
@@ -63,6 +84,9 @@ test('successful polling clears only transient command warnings', () => {
   assert.equal(recovery.consumeAfterSuccessfulRefresh(), false);
 
   recovery.recordFailure(Object.assign(new Error('rate limited'), { status: 429 }));
+  assert.equal(recovery.consumeAfterSuccessfulRefresh(), true);
+
+  recovery.recordFailure(new Error('Device is offline. Please check the Wi-Fi connection.'));
   assert.equal(recovery.consumeAfterSuccessfulRefresh(), true);
 });
 
@@ -192,4 +216,31 @@ test('cloud API reports non-JSON and non-retryable failures clearly', async () =
     fetch: async () => ({ status: 401, headers: { get: () => null }, text: async () => 'unauthorized' }),
   });
   await assert.rejects(() => client.request('/ping'), /non-JSON response/);
+});
+
+test('cloud API blocks H5089 master OFF but dispatches both outlet commands', async () => {
+  const requests = [];
+  const client = new GoveeClient({
+    api_key: 'secret',
+    fetch: async (_url, config) => {
+      requests.push(JSON.parse(config.body));
+      return response(200, { code: 200, payload: {} });
+    },
+  });
+
+  await assert.rejects(
+    () => client.devicesTurn(0, 'H5089', 'device-id'),
+    (error) => error.code === 'GOVEE_POWER_OFF_PROTECTED',
+  );
+  assert.equal(requests.length, 0);
+
+  await client.devicesToggle(0, 'socketToggle1', 'H5089', 'device-id');
+  await client.devicesToggle(1, 'socketToggle2', 'H5089', 'device-id');
+  assert.deepEqual(
+    requests.map((request) => request.payload.capability),
+    [
+      { type: 'devices.capabilities.toggle', instance: 'socketToggle1', value: 0 },
+      { type: 'devices.capabilities.toggle', instance: 'socketToggle2', value: 1 },
+    ],
+  );
 });

@@ -5,6 +5,10 @@ const { parseGoveeRgbState, resolveHomeyColor } = require('../lib/govee-color');
 const { GoveeCommandCoordinator } = require('../lib/govee-command-coordinator');
 const { GoveeWarningRecovery } = require('../lib/govee-warning-recovery');
 const { findCapabilityValue, nearlyEqual } = require('../lib/govee-state');
+const {
+  assertPowerCommandAllowed,
+  exposesMasterPowerControl,
+} = require('../lib/govee-device-quirks');
 const GoveeSharedDevice = require('./govee-shared-device');
 
 class GoveeDevice extends Device {
@@ -235,7 +239,8 @@ class GoveeDevice extends Device {
     } catch (err) {
       this.error('Failed to add alarm_connectivity capability:', err.message);
     }
-    if(this.data.capabilitieslist.find(function(e) { return e.instance == "powerSwitch" })) {
+    if(this.data.capabilitieslist.find(function(e) { return e.instance == "powerSwitch" })
+      && exposesMasterPowerControl(this.data.model)) {
       if(!this.hasCapability('onoff'))
         await this.addCapability('onoff');
     } else if(this.hasCapability('onoff'))
@@ -489,6 +494,7 @@ class GoveeDevice extends Device {
    * @param {*} opts 
    */
   async onCapabilityOnoff( value, opts ) {
+    assertPowerCommandAllowed(this.data.model, 'powerSwitch', value);
     await this.executeVerifiedCommand(
       'Power command',
       () => this.driver.turn(value ? 1 : 0, this.data.model, this.data.mac, this.goveedevicetype),

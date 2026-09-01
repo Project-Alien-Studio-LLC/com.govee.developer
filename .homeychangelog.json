@@ -286,5 +286,8 @@
   },
   "2.17.19": {
     "en": "fixed cold-start race where local devices were never discovered when the Homey app started before wifi was ready; the local API now waits for a network interface before initialising"
+  },
+  "2.17.20": {
+    "en": "fixed H5089 controls: Outlet 1 and Outlet 2 retain independent on/off control, while the master power switch is hidden and protected from accidental off commands"
   }
 }

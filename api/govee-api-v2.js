@@ -7,6 +7,7 @@
 
 const fetch = require('isomorphic-unfetch');
 const { randomUUID } = require('node:crypto');
+const { assertPowerCommandAllowed } = require('../lib/govee-device-quirks');
 
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -361,6 +362,11 @@ class GoveeClient {
   }
 
   devicesTurn(mode, model, device) {
+    try {
+      assertPowerCommandAllowed(model, 'powerSwitch', mode);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return new Promise((resolve, reject) => {
       if ((mode != 1 && mode != 0)) {
         reject(new Error("Incorrect turn parameter"));
