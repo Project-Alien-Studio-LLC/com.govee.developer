@@ -3,6 +3,7 @@
 const { Device } = require('homey');
 const { parseGoveeRgbState, resolveHomeyColor } = require('../lib/govee-color');
 const { GoveeCommandCoordinator } = require('../lib/govee-command-coordinator');
+const { GoveeWarningRecovery } = require('../lib/govee-warning-recovery');
 const { findCapabilityValue, nearlyEqual } = require('../lib/govee-state');
 const GoveeSharedDevice = require('./govee-shared-device');
 
@@ -12,6 +13,7 @@ class GoveeDevice extends Device {
    */
   async setupDevice() {
     this._commandCoordinator = this._commandCoordinator || new GoveeCommandCoordinator();
+    this._warningRecovery = this._warningRecovery || new GoveeWarningRecovery();
     try {
       this._setupStage = 'device data';
       this.sharedDevice = new GoveeSharedDevice.SharedDevice();
@@ -201,6 +203,9 @@ class GoveeDevice extends Device {
 
       this._refreshFailures = 0;
       await this.setAvailable().catch(() => {});
+      if (this._warningRecovery?.consumeAfterSuccessfulRefresh()) {
+        await this.unsetWarning().catch(() => {});
+      }
       return currentState;
     } catch (error) {
       this._refreshFailures = (this._refreshFailures || 0) + 1;
@@ -441,9 +446,11 @@ class GoveeDevice extends Device {
         verify,
         attempts,
       });
+      this._warningRecovery?.recordSuccess();
       await this.unsetWarning().catch(() => {});
       return result;
     } catch (error) {
+      this._warningRecovery?.recordFailure(error);
       await this.setWarning(`${label} failed verification: ${error.message}`).catch(() => {});
       throw error;
     }
@@ -592,10 +599,13 @@ class GoveeDevice extends Device {
    * @param {*} opts 
    */
         async onCapabilityNightlightScenes( value, opts ) {
-          this.setWarning('Will switch to nightlight scene '+this.nightlightScenes.options[value].name);
-          this.log('Mode switched to item '+value+' that results in diy scene '+JSON.stringify(this.nightlightScenes.options[value]));
-          await this.executeSerializedCommand('Nightlight scene command', () => this.driver.setMode(this.nightlightScenes.options[value].value, "nightlightScene", this.data.model, this.data.mac, this.goveedevicetype));
-          this.unsetWarning();
+          const scene = this.nightlightScenes.options[value];
+          this.log('Mode switched to item '+value+' that results in nightlight scene '+JSON.stringify(scene));
+          await this.executeVerifiedCommand(
+            'Nightlight scene command',
+            () => this.driver.setMode(scene.value, 'nightlightScene', this.data.model, this.data.mac, this.goveedevicetype),
+            (state) => JSON.stringify(this.stateValue(state, 'nightlightScene')) === JSON.stringify(scene.value),
+          );
         }
   
 

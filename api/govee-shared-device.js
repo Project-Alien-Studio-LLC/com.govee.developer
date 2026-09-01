@@ -1,4 +1,7 @@
-const { supportsRemoteNightlightPower } = require('../lib/govee-device-quirks');
+const {
+  filterSupportedNightlightScenes,
+  supportsRemoteNightlightPower,
+} = require('../lib/govee-device-quirks');
 
 class GoveeSharedDeviceClient {
     constructor() {
@@ -260,6 +263,12 @@ class GoveeSharedDeviceClient {
                   device.log('Failed to fetch dynamic nightlight scenes: '+e.message);
                   device.nightlightScenes = null;
                 }
+              }
+              if(device.nightlightScenes && Array.isArray(device.nightlightScenes.options)) {
+                device.nightlightScenes = {
+                  ...device.nightlightScenes,
+                  options: filterSupportedNightlightScenes(model, device.nightlightScenes.options),
+                };
               }
               if(device.nightlightScenes && device.nightlightScenes.options && device.nightlightScenes.options.length>0){
                 const modeOptions = {

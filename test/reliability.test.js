@@ -8,7 +8,11 @@ const { GoveePollScheduler } = require('../lib/govee-poll-scheduler');
 const { GoveeCommandCoordinator } = require('../lib/govee-command-coordinator');
 const { GoveeClient } = require('../api/govee-api-v2');
 const { SharedDevice } = require('../api/govee-shared-device');
-const { supportsRemoteNightlightPower } = require('../lib/govee-device-quirks');
+const {
+  filterSupportedNightlightScenes,
+  supportsRemoteNightlightPower,
+} = require('../lib/govee-device-quirks');
+const { GoveeWarningRecovery } = require('../lib/govee-warning-recovery');
 
 test('MQTT parser accepts validated device events and rejects malformed input', () => {
   const payload = parseGoveeMqttMessage(Buffer.from(JSON.stringify({
@@ -36,6 +40,30 @@ test('state helper tolerates partial capability payloads', () => {
 test('H5089 hides only its unsupported remote nightlight power toggle', () => {
   assert.equal(supportsRemoteNightlightPower('H5089'), false);
   assert.equal(supportsRemoteNightlightPower('H7140'), true);
+});
+
+test('H5089 hides the scene value its firmware accepts without applying', () => {
+  const scenes = [
+    { name: 'Forest', value: 0 },
+    { name: 'Ocean', value: 1 },
+  ];
+
+  assert.deepEqual(filterSupportedNightlightScenes('H5089', scenes), [scenes[1]]);
+  assert.deepEqual(filterSupportedNightlightScenes('H7140', scenes), scenes);
+});
+
+test('successful polling clears only transient command warnings', () => {
+  const recovery = new GoveeWarningRecovery();
+
+  recovery.recordFailure(Object.assign(new Error('fetch failed'), { code: 'GOVEE_NETWORK_ERROR' }));
+  assert.equal(recovery.consumeAfterSuccessfulRefresh(), true);
+  assert.equal(recovery.consumeAfterSuccessfulRefresh(), false);
+
+  recovery.recordFailure(Object.assign(new Error('not verified'), { code: 'GOVEE_COMMAND_NOT_VERIFIED' }));
+  assert.equal(recovery.consumeAfterSuccessfulRefresh(), false);
+
+  recovery.recordFailure(Object.assign(new Error('rate limited'), { status: 429 }));
+  assert.equal(recovery.consumeAfterSuccessfulRefresh(), true);
 });
 
 test('poll scheduler runs due device refreshes serially', async () => {
