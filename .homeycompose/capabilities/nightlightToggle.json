@@ -4,6 +4,8 @@
     "en": "Nightlight"
   },
   "getable": true,
+  "titleTrue": { "en": "On" },
+  "titleFalse": { "en": "Off" },
   "setable": true,
   "uiComponent": "button"
 }

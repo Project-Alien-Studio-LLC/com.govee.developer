@@ -13,7 +13,6 @@ const {
   exposesMasterPowerControl,
   filterSupportedNightlightScenes,
   supportsRemoteNightlightPower,
-  usesOptimisticNightlightPower,
 } = require('../lib/govee-device-quirks');
 const { GoveeWarningRecovery } = require('../lib/govee-warning-recovery');
 
@@ -40,11 +39,9 @@ test('state helper tolerates partial capability payloads', () => {
   assert.equal(nearlyEqual(undefined, 0.5), false);
 });
 
-test('H5089 exposes a dedicated optimistic nightlight power toggle', () => {
+test('H5089 exposes a dedicated nightlight power toggle', () => {
   assert.equal(supportsRemoteNightlightPower('H5089'), true);
-  assert.equal(usesOptimisticNightlightPower('H5089'), true);
   assert.equal(supportsRemoteNightlightPower('H7140'), true);
-  assert.equal(usesOptimisticNightlightPower('H7140'), false);
 });
 
 test('H5089 does not expose its infrastructure master switch as Homey onoff', () => {
@@ -129,6 +126,34 @@ test('command coordinator retries idempotent commands until readback verifies', 
   });
   assert.equal(sends, 2);
   assert.equal(reads, 2);
+});
+
+test('single-send verification waits for delayed state without resending', async () => {
+  let sends = 0;
+  let reads = 0;
+  const coordinator = new GoveeCommandCoordinator({ waitFn: async () => {} });
+  await coordinator.execute({
+    send: async () => { sends += 1; },
+    read: async () => ++reads,
+    verify: value => value === 3,
+    attempts: 3,
+    resend: false,
+  });
+  assert.equal(sends, 1);
+  assert.equal(reads, 3);
+});
+
+test('single-send verification rejects an accepted but unapplied command', async () => {
+  let sends = 0;
+  const coordinator = new GoveeCommandCoordinator({ waitFn: async () => {} });
+  await assert.rejects(coordinator.execute({
+    send: async () => { sends += 1; },
+    read: async () => false,
+    verify: value => value === true,
+    attempts: 3,
+    resend: false,
+  }), error => error.code === 'GOVEE_COMMAND_NOT_VERIFIED');
+  assert.equal(sends, 1);
 });
 
 test('command coordinator serializes concurrent commands', async () => {
@@ -237,6 +262,17 @@ test('cloud API blocks H5089 master OFF but dispatches both outlet commands', as
   );
   assert.equal(requests.length, 0);
 
+  await assert.rejects(
+    () => client.devicesToggle(0, 'powerSwitch', 'H5089', 'device-id'),
+    error => error.code === 'GOVEE_POWER_OFF_PROTECTED',
+  );
+  await assert.rejects(
+    () => client.deviceControl({ payload: { sku: 'H5089', device: 'device-id',
+      capability: { type: 'devices.capabilities.on_off', instance: 'powerSwitch', value: 0 } } }),
+    error => error.code === 'GOVEE_POWER_OFF_PROTECTED',
+  );
+  assert.equal(requests.length, 0);
+
   await client.devicesToggle(0, 'socketToggle1', 'H5089', 'device-id');
   await client.devicesToggle(1, 'socketToggle2', 'H5089', 'device-id');
   await client.devicesToggle(0, 'nightlightToggle', 'H5089', 'device-id');
@@ -248,4 +284,40 @@ test('cloud API blocks H5089 master OFF but dispatches both outlet commands', as
       { type: 'devices.capabilities.toggle', instance: 'nightlightToggle', value: 0 },
     ],
   );
+});
+
+test('partial or invalid toggle state never overwrites known outlet state', async () => {
+  const updates = [];
+  const device = {
+    goveedevicetype: 'socket', hasCapability: () => true, log: () => {},
+    setCapabilityValue: async (...args) => updates.push(args),
+  };
+  await new SharedDevice().refreshDynamicCapabilities({ capabilitieslist: [
+    { instance: 'socketToggle1', state: {} },
+    { instance: 'socketToggle2', state: { value: null } },
+    { instance: 'nightlightToggle', state: { value: 'unknown' } },
+  ] }, device);
+  assert.deepEqual(updates, []);
+});
+
+test('toggle refresh tolerates null entries and awaits Homey state writes', async () => {
+  const values = {};
+  const device = {
+    goveedevicetype: 'socket', hasCapability: () => true, log: () => {},
+    setCapabilityValue: async (id, value) => {
+      await new Promise(resolve => setImmediate(resolve));
+      values[id] = value;
+    },
+  };
+  await new SharedDevice().refreshDynamicCapabilities({ capabilitieslist: [
+    null,
+    { instance: 'socketToggle1', state: { value: '0' } },
+    { instance: 'socketToggle2', state: { value: 1 } },
+    { instance: 'nightlightToggle', state: { value: true } },
+  ] }, device);
+  assert.deepEqual(values, {
+    'socketToggle1.socket': false,
+    'socketToggle2.socket': true,
+    'nightlightToggle.socket': true,
+  });
 });

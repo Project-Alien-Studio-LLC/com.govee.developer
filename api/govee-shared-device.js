@@ -2,6 +2,7 @@ const {
   filterSupportedNightlightScenes,
   supportsRemoteNightlightPower,
 } = require('../lib/govee-device-quirks');
+const { findCapabilityValue, parseBinaryState } = require('../lib/govee-state');
 
 class GoveeSharedDeviceClient {
     constructor() {
@@ -26,23 +27,13 @@ class GoveeSharedDeviceClient {
 
     async refreshDynamicCapabilities(currentState,device)
     {
-      //nightlightToggle
-      if(device.hasCapability('nightlightToggle.'+device.goveedevicetype))
-        {
-          device.log('Processing the nightlight state');
-          var nightlight = currentState.capabilitieslist.find(function(e) {return e.instance == "nightlightToggle" })
-          if (nightlight?.state && Object.prototype.hasOwnProperty.call(nightlight.state, 'value')) {
-            device.setCapabilityValue('nightlightToggle.'+device.goveedevicetype, (nightlight.state.value == 1)).catch( reason => device.log('Error while updating capability: '+reason) );
-          }
-        }
-      for (const instance of ['socketToggle1', 'socketToggle2']) {
+      for (const instance of ['nightlightToggle', 'socketToggle1', 'socketToggle2']) {
         const capability = instance+'.'+device.goveedevicetype;
         if (device.hasCapability(capability)) {
-          const socketToggle = currentState.capabilitieslist.find((entry) => entry.instance === instance);
-          if (socketToggle && socketToggle.state) {
-            device.setCapabilityValue(capability, socketToggle.state.value == 1).catch(
-              (reason) => device.log('Error while updating '+capability+': '+reason),
-            );
+          const value = parseBinaryState(findCapabilityValue(currentState?.capabilitieslist, instance));
+          // Missing or malformed state must not become a false OFF report.
+          if (value !== undefined) {
+            await device.setCapabilityValue(capability, value);
           }
         }
       }

@@ -290,6 +290,12 @@
   "2.17.20": {
     "en": "fixed H5089 controls: Outlet 1 and Outlet 2 retain independent on/off control, while the master power switch is hidden and protected from accidental off commands"
   },
+  "2.17.23": {
+    "en": "Preserve known toggle state on partial cloud responses, await state updates, block H5089 master OFF at the shared control boundary, and label nightlight state On/Off."
+  },
+  "2.17.22": {
+    "en": "Verify H5089 nightlight changes with delayed state reads without resending or reporting optimistic success; retain independent outlets and master-power protection."
+  },
   "2.17.21": {
     "en": "restored the H5089 Nightlight on/off quick control using its dedicated nightlightToggle capability while keeping master power hidden and protected"
   }

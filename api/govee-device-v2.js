@@ -8,7 +8,6 @@ const { findCapabilityValue, nearlyEqual } = require('../lib/govee-state');
 const {
   assertPowerCommandAllowed,
   exposesMasterPowerControl,
-  usesOptimisticNightlightPower,
 } = require('../lib/govee-device-quirks');
 const GoveeSharedDevice = require('./govee-shared-device');
 
@@ -443,7 +442,7 @@ class GoveeDevice extends Device {
     this.setIfHasCapability('alarm_tank_empty', value);
   }
 
-  async executeVerifiedCommand(label, send, verify, attempts = 2) {
+  async executeVerifiedCommand(label, send, verify, attempts = 2, options = {}) {
     try {
       const result = await this._commandCoordinator.execute({
         label,
@@ -451,6 +450,7 @@ class GoveeDevice extends Device {
         read: () => this.refreshFreshState(),
         verify,
         attempts,
+        ...options,
       });
       this._warningRecovery?.recordSuccess();
       await this.unsetWarning().catch(() => {});
@@ -529,24 +529,16 @@ class GoveeDevice extends Device {
   }
 
   async onCapabilityNightlight( value, opts ) {
-    if (usesOptimisticNightlightPower(this.data.model)) {
-      await this.executeSerializedCommand(
-        'Nightlight command',
-        () => this.driver.toggle(value ? 1 : 0, 'nightlightToggle', this.data.model, this.data.mac, this.goveedevicetype),
-      );
-      await this.setCapabilityValue('nightlightToggle.'+this.goveedevicetype, Boolean(value));
-      this.homey.setTimeout(() => {
-        void this.refreshState().catch((error) => this.log(`Nightlight state reconciliation failed: ${error.message}`));
-      }, 5000);
-      return;
-    }
     await this.executeVerifiedCommand(
       'Nightlight command',
       () => this.driver.toggle(value ? 1 : 0, 'nightlightToggle', this.data.model, this.data.mac, this.goveedevicetype),
       (state) => {
         const observed = this.stateValue(state, 'nightlightToggle');
-        return observed !== undefined && Boolean(observed) === Boolean(value);
+        return (observed === true || observed === 1 || observed === '1') === value
+          && [true, false, 0, 1, '0', '1'].includes(observed);
       },
+      this.data.model === 'H5089' ? 3 : 2,
+      this.data.model === 'H5089' ? { resend: false, readbackDelayMs: 1500 } : {},
     );
   }
 

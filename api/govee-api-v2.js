@@ -122,7 +122,9 @@ class GoveeClient {
     return this.request("/user/devices", config);
   }
 
-  deviceControl(body) {
+  async deviceControl(body) {
+    const payload = body?.payload;
+    assertPowerCommandAllowed(payload?.sku, payload?.capability?.instance, payload?.capability?.value);
     const config = {
       method: 'POST',
       body: JSON.stringify(body)
