@@ -686,7 +686,9 @@ class GoveeDevice extends Device {
         const observed = parseGoveeRgbState(state?.capabilitieslist, this.driver.colorCommandGetParser.bind(this.driver));
         if (observed?.mode !== 'color') return false;
         const hueDistance = Math.min(Math.abs(observed.hue - color.hue), 1 - Math.abs(observed.hue - color.hue));
-        return hueDistance <= 0.03 && nearlyEqual(observed.saturation, color.saturation, 0.05);
+        // White has no meaningful hue; RGB readback commonly reports hue zero.
+        return (color.saturation === 0 || hueDistance <= 0.03)
+          && nearlyEqual(observed.saturation, color.saturation, 0.05);
       },
     );
   }

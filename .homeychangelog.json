@@ -290,6 +290,9 @@
   "2.17.20": {
     "en": "fixed H5089 controls: Outlet 1 and Outlet 2 retain independent on/off control, while the master power switch is hidden and protected from accidental off commands"
   },
+  "2.17.24": {
+    "en": "Fix white color verification, preserve color for null picker fields, and tolerate partial cloud color responses without accepting malformed RGB values."
+  },
   "2.17.23": {
     "en": "Preserve known toggle state on partial cloud responses, await state updates, block H5089 master OFF at the shared control boundary, and label nightlight state On/Off."
   },
