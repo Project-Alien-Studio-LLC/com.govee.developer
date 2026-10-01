@@ -1,0 +1,41 @@
+name: Homey validation
+
+on:
+  push:
+    branches: ["homey-h5089-fixes"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homey-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+      - name: Install locked app dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run existing regression tests on Homey runtime version
+        run: npm test
+      - name: Check integration source syntax
+        run: npm run check
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+      - name: Install pinned Homey validation tool
+        run: npm install --prefix "$RUNNER_TEMP/homey-cli" --ignore-scripts --no-audit --no-fund homey@4.5.3
+      - name: Validate and package app without deployment
+        env:
+          HOMEY_CLI: ${{ runner.temp }}/homey-cli/node_modules/.bin/homey
+        run: |
+          "$HOMEY_CLI" app validate --level debug
+          "$HOMEY_CLI" app build
