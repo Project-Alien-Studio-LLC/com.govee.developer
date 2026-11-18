@@ -4,6 +4,8 @@ const { Driver } = require('homey');
 
 // A finished shared scan is reused by devices polling within this window.
 const SHARED_SCAN_REUSE_MS = 5000;
+// Upper bound on how long a shared scan is reused or awaited by new polls.
+const SHARED_SCAN_STALE_MS = 30000;
 
 // Govee BLE sensor model patterns (matching Home Assistant govee-ble)
 // These sensors broadcast temperature/humidity via BLE advertisements
@@ -53,7 +55,13 @@ class GoveeBLESensorDriver extends Driver {
    * @returns {Promise<BleAdvertisement[]>}
    */
   getSharedAdvertisements() {
-    if (this._sharedScan) return this._sharedScan;
+    // A scan that has not settled within SHARED_SCAN_STALE_MS is treated as
+    // hung (the Homey BLE stack can stall) and abandoned, so the next poll
+    // issues a fresh discover just like the per-device scans did before.
+    if (this._sharedScan && Date.now() - this._sharedScanStartedAt < SHARED_SCAN_STALE_MS) {
+      return this._sharedScan;
+    }
+    this._sharedScanStartedAt = Date.now();
     const scan = Promise.resolve()
       .then(() => this.homey.ble.discover())
       .then((advertisements) => {

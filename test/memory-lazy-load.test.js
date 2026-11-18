@@ -243,3 +243,36 @@ test('a failed shared BLE scan is not cached', async () => {
   assert.deepEqual(await driver.getSharedAdvertisements(), []);
   assert.equal(calls, 2);
 });
+
+test('a hung shared BLE scan does not block later polls from scanning again', async () => {
+  const BleDriver = require('../drivers/govee-ble-sensor/driver.js');
+  let calls = 0;
+  const driver = new BleDriver();
+  driver.homey = {
+    ble: {
+      discover() {
+        calls += 1;
+        if (calls === 1) return new Promise(() => {}); // BLE stack stall: never settles
+        return Promise.resolve([{ uuid: 'u1' }]);
+      },
+    },
+    setTimeout(fn, ms) { const t = setTimeout(fn, ms); t.unref(); return t; },
+  };
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    driver.getSharedAdvertisements(); // never settles
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+    now += 10000; // a poll during a normal ~10 s scan still joins it
+    driver.getSharedAdvertisements();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(calls, 1);
+    now += 20000; // next 30 s poll: the stuck scan is abandoned
+    assert.deepEqual(await driver.getSharedAdvertisements(), [{ uuid: 'u1' }]);
+    assert.equal(calls, 2);
+  } finally {
+    Date.now = realNow;
+  }
+});
