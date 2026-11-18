@@ -1,7 +1,6 @@
 'use strict';
 
 const Homey = require('homey');
-const mqtt = require('mqtt');
 const { EventEmitter } = require('events');
 const gvCloud = require('./api/govee-api-v2');
 const { GoveePollScheduler } = require('./lib/govee-poll-scheduler');
@@ -151,7 +150,10 @@ class GoveeApp extends Homey.App {
       this.error('Cannot connect Govee MQTT: API key is not configured');
       return;
     }
-    const emqx_url = 'mqtt.openapi.govee.com'; 
+    // Loaded on first use: only cloud devices that advertise MQTT events need
+    // it, and the mqtt module tree costs several MB of resident memory.
+    const mqtt = require('mqtt');
+    const emqx_url = 'mqtt.openapi.govee.com';
 
     const options = {  
         clean: true,  

@@ -39,7 +39,9 @@ class GoveeBLESensorDevice extends Device {
    */
   async _pollBleData() {
     try {
-      const advertisements = await this.homey.ble.discover();
+      const advertisements = typeof this.driver?.getSharedAdvertisements === 'function'
+        ? await this.driver.getSharedAdvertisements()
+        : await this.homey.ble.discover();
 
       for (const advertisement of advertisements) {
         if (advertisement.uuid === this._uuid || advertisement.address === this._address) {

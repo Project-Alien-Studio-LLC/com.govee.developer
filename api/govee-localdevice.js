@@ -8,6 +8,11 @@ class GoveeLocalDevice extends Device {
    * onInit is called when the device is initialized.
    */
   async setupDevice() {
+    // The driver only starts the LAN client when local devices exist; make
+    // sure it runs before anything below touches app.localApiClient.
+    if (typeof this.driver?.ensureLocalClient === 'function') {
+      this.driver.ensureLocalClient();
+    }
     this.sharedDevice = new GoveeSharedDevice.SharedDevice();
     this.cloudEnhance=await this.getSetting('cloud_enhance');
     //Enable the cloud api if we will use it

@@ -3,6 +3,10 @@ const GoveeDriver = require('../../api/govee-localdriver');
 class goveeDeviceDriver extends GoveeDriver {
 
   async onPair(session) {
+    // Start the LAN client (if not running yet) as soon as pairing opens so
+    // discovery has time to find devices before list_devices is shown.
+    this.ensureLocalClient();
+
     // Handle discovery mode selection from the custom view
     session.setHandler('set_discovery_mode', async (data) => {
       this.log('Discovery mode selected: ' + data.mode);

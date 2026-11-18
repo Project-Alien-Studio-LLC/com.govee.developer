@@ -2,6 +2,9 @@
 
 const { Driver } = require('homey');
 
+// A finished shared scan is reused by devices polling within this window.
+const SHARED_SCAN_REUSE_MS = 5000;
+
 // Govee BLE sensor model patterns (matching Home Assistant govee-ble)
 // These sensors broadcast temperature/humidity via BLE advertisements
 const GOVEE_SENSOR_MODELS = [
@@ -40,6 +43,33 @@ class GoveeBLESensorDriver extends Driver {
     this.log('Govee BLE Sensor driver initialized');
     // Start background discovery on driver init so devices are ready when pairing starts
     this._startBackgroundDiscovery();
+  }
+
+  /**
+   * One BLE scan shared by every paired sensor. Devices poll on the same 30 s
+   * cadence, so instead of N parallel homey.ble.discover() calls (and N copies
+   * of the advertisement array) they all await the same in-flight scan, and a
+   * scan that finished less than SHARED_SCAN_REUSE_MS ago is reused.
+   * @returns {Promise<BleAdvertisement[]>}
+   */
+  getSharedAdvertisements() {
+    if (this._sharedScan) return this._sharedScan;
+    const scan = Promise.resolve()
+      .then(() => this.homey.ble.discover())
+      .then((advertisements) => {
+        // Keep the finished scan briefly so devices that poll a moment later
+        // reuse it, then drop the reference so the array can be collected.
+        this._sharedScanTimer = this.homey.setTimeout(() => {
+          if (this._sharedScan === scan) this._sharedScan = null;
+          this._sharedScanTimer = null;
+        }, SHARED_SCAN_REUSE_MS);
+        return advertisements;
+      }, (error) => {
+        if (this._sharedScan === scan) this._sharedScan = null;
+        throw error;
+      });
+    this._sharedScan = scan;
+    return scan;
   }
 
   /**

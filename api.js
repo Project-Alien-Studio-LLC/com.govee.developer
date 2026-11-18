@@ -91,10 +91,20 @@ module.exports = {
     const client = homey.app.localApiClient;
 
     if (!client) {
-      // Try to create a new client
-      const gv = require('./api/govee-localapi');
+      // Try to create a new client. Prefer the local driver so the
+      // connectivity events stay wired to the app event bus.
       try {
-        homey.app.localApiClient = new gv.GoveeClient();
+        let localDriver = null;
+        try { localDriver = homey.drivers.getDriver('govee-local-device'); } catch (_err) { /* driver not ready */ }
+        if (localDriver && typeof localDriver.ensureLocalClient === 'function') {
+          localDriver.ensureLocalClient();
+        } else {
+          const gv = require('./api/govee-localapi');
+          homey.app.localApiClient = new gv.GoveeClient();
+        }
+        if (!homey.app.localApiClient) {
+          return { success: false, error: 'Local API client could not be created' };
+        }
 
         // Wait for initialization
         await new Promise(resolve => setTimeout(resolve, 5000));

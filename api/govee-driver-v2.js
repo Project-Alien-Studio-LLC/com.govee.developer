@@ -1,7 +1,8 @@
 'use strict';
 
 const { Driver } = require('homey');
-const tinycolor = require('tinycolor2');
+// Loaded on first colour conversion instead of at app start.
+const tinycolor = (input) => require('tinycolor2')(input);
 const gv = require('./govee-api-v2');
 
 class GoveeDriver extends Driver {
@@ -58,7 +59,8 @@ class GoveeDriver extends Driver {
     await this.reInit();
     this.log('List available '+type);
     var devicelist = await this.api.deviceList();
-    this.log(devicelist);
+    const listed = Array.isArray(devicelist?.data) ? devicelist.data : [];
+    this.log('Cloud device list returned ' + listed.length + ' device(s): ' + listed.map((d) => d.sku).join(', '));
 
     //Convert to our Homey device info object
     var devices = await devicelist.data.map((device) => {
@@ -76,7 +78,6 @@ class GoveeDriver extends Driver {
           //capabilitieslist: device.capabilities,
         }
       }
-      this.log(type+' located: '+JSON.stringify(goveedevice));
       return goveedevice;
     });
     //Now we filter on types

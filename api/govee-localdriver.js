@@ -1,19 +1,37 @@
 'use strict';
 
 const { Driver } = require('homey');
-const tinycolor = require('tinycolor2');
-const gv = require('./govee-localapi');
 const gvCloud = require('./govee-api-v2');
 
+// Loaded on first use to keep idle memory down when no colour conversion or
+// LAN device is needed.
+const tinycolor = (input) => require('tinycolor2')(input);
 
 class GoveeDriver extends Driver {
   /**
    * onInit is called when the driver is initialized.
    */
   async onInit() {
+    // The LAN client (UDP socket, discovery timer, govee-lan-control) is only
+    // started when a local device is paired. Pairing and device init start it
+    // on demand through ensureLocalClient().
+    if (this.getDevices().length > 0) {
+      this.ensureLocalClient();
+    } else {
+      this.log('No local devices paired; Local API client starts on pairing');
+    }
+    this.log('govee.localdriver has been initialized');
+  }
+
+  /**
+   * Create the shared Local API client once, with its connectivity events
+   * wired to the app event bus. Safe to call repeatedly.
+   */
+  ensureLocalClient() {
     if (this.homey.app.localApiClient === null) {
       this.log('Initializing Local API client...');
       try {
+        const gv = require('./govee-localapi');
         this.homey.app.localApiClient = new gv.GoveeClient();
 
         // Register event listeners to propagate device connectivity events
@@ -52,7 +70,7 @@ class GoveeDriver extends Driver {
         this.homey.app.localApiClient = null;
       }
     }
-    this.log('govee.localdriver has been initialized');
+    return this.homey.app.localApiClient;
   }
 
   async cloudInit()
@@ -68,6 +86,7 @@ class GoveeDriver extends Driver {
    */
   async ListDevices() {
     this.log('List available devices');
+    this.ensureLocalClient();
 
     // Check if local API client is available and ready
     if (!this.homey.app.localApiClient) {
